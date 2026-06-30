@@ -1,0 +1,22 @@
+{
+  "profiles": {
+    "raast": {
+      "mandatory": ["BeneficiaryName", "Amount", "BeneficiaryMobile", "BeneficiaryIdentificationType", "BeneficiaryIdentificationNo", "BeneficiaryIBAN"],
+      "iban_check": true
+    },
+    "web_based": {
+      "mandatory": ["BeneficiaryName", "Amount", "BeneficiaryMobile", "BeneficiaryAccountNo"],
+      "iban_check": false
+    },
+    "1link": {
+      "mandatory": ["BeneficiaryName", "Amount", "BeneficiaryNumber", "BeneficiaryAccountNumber"],
+      "iban_check": false
+    }
+  },
+  "validations": {
+    "CNIC": { "length": 13, "format": "numeric" },
+    "NTN": { "length": 8, "format": "alphanumeric" },
+    "IBAN": { "length": 24, "uppercase": true },
+    "ProductTypeCode": { "required": false }
+  }
+}
