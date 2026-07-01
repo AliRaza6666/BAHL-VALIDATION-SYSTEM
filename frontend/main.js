@@ -33,8 +33,7 @@ const el = {
     previewThead: document.getElementById('preview-thead'),
     previewTbody: document.getElementById('preview-tbody'),
     
-    downloadPassedBtn: document.getElementById('download-passed-btn'),
-    downloadRejectedBtn: document.getElementById('download-rejected-btn'),
+    downloadReportBtn: document.getElementById('download-report-btn'),
     resetBtn: document.getElementById('reset-btn')
 };
 
@@ -70,10 +69,8 @@ function resetValidationState() {
     
     // Reset state variables
     currentFileId = null;
-    el.downloadPassedBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-    el.downloadRejectedBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-    el.downloadPassedBtn.disabled = false;
-    el.downloadRejectedBtn.disabled = false;
+    el.downloadReportBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    el.downloadReportBtn.disabled = true;
     
     // Reset profile selection
     el.profileSelect.value = 'auto';
@@ -328,25 +325,12 @@ function renderDashboard(data) {
         el.errorBreakdownList.appendChild(li);
     }
     
-    // Enable/disable download buttons
-    el.downloadPassedBtn.disabled = data.summary.passed === 0;
-    el.downloadRejectedBtn.disabled = data.summary.rejected === 0;
-    
-    // Disable red button if no rejected records
-    if (data.summary.rejected === 0) {
-        el.downloadRejectedBtn.classList.add('opacity-50', 'cursor-not-allowed');
-        el.downloadRejectedBtn.disabled = true;
+    // Enable/disable the single report download button
+    el.downloadReportBtn.disabled = !currentFileId;
+    if (!currentFileId) {
+        el.downloadReportBtn.classList.add('opacity-50', 'cursor-not-allowed');
     } else {
-        el.downloadRejectedBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-        el.downloadRejectedBtn.disabled = false;
-    }
-    
-    if (data.summary.passed === 0) {
-        el.downloadPassedBtn.classList.add('opacity-50', 'cursor-not-allowed');
-        el.downloadPassedBtn.disabled = true;
-    } else {
-        el.downloadPassedBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-        el.downloadPassedBtn.disabled = false;
+        el.downloadReportBtn.classList.remove('opacity-50', 'cursor-not-allowed');
     }
 
     renderPreviewTable(data);
@@ -402,15 +386,9 @@ function renderPreviewTable(data) {
 }
 
 // --- Download File Handlers ---
-el.downloadPassedBtn.addEventListener('click', () => {
+el.downloadReportBtn.addEventListener('click', () => {
     if (currentFileId) {
-        window.location.href = buildApiUrl(`/api/download/passed/${currentFileId}`);
-    }
-});
-
-el.downloadRejectedBtn.addEventListener('click', () => {
-    if (currentFileId) {
-        window.location.href = buildApiUrl(`/api/download/rejected/${currentFileId}`);
+        window.location.href = buildApiUrl(`/api/download/report/${currentFileId}`);
     }
 });
 

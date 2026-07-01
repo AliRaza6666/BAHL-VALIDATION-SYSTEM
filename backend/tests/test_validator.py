@@ -8,7 +8,7 @@ import xlwt
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app import detect_excel_format, parse_excel_workbook, validate_rows, generate_validated_excel_streams
+from app import detect_excel_format, parse_excel_workbook, validate_rows, generate_validated_excel_streams, generate_highlighted_validation_report
 
 
 def load_rules():
@@ -243,6 +243,96 @@ def test_generate_validated_excel_streams_emits_xlsx_for_xls_input():
 
     assert passed_wb.sheetnames == ['Sheet']
     assert rejected_wb.sheetnames == ['Sheet']
+
+
+def test_web_profile_allows_duplicate_beneficiary_account_numbers():
+    rules = load_rules()
+    rows = [
+        {
+            'Amount': '100.50',
+            'BeneficiaryBankCode': '001',
+            'BeneficiaryAccountNo': '000123456',
+            'BeneficiaryName': 'Ali Khan',
+            'BeneficiaryCode': 'B1',
+            'ReferenceField1': 'R1',
+            'ReferenceField2': 'R2',
+            'BeneficiaryEmail': 'ali@example.com',
+            'BeneficiaryMobile': '03112753114',
+        },
+        {
+            'Amount': '100.50',
+            'BeneficiaryBankCode': '001',
+            'BeneficiaryAccountNo': '000123456',
+            'BeneficiaryName': 'Ahmed Khan',
+            'BeneficiaryCode': 'B1',
+            'ReferenceField1': 'R1',
+            'ReferenceField2': 'R2',
+            'BeneficiaryEmail': 'ali@example.com',
+            'BeneficiaryMobile': '03112753114',
+        },
+    ]
+
+    results = validate_rows(rows, 'web_based', rules)
+
+    assert results[0]['status'] == 'PASS'
+    assert results[1]['status'] == 'PASS'
+    assert all(not any(err.get('is_duplicate') for err in result['errors']) for result in results)
+
+
+def test_generate_validated_excel_streams_adds_status_and_error_columns_with_styling():
+    rows = [
+        {'BeneficiaryName': 'Ali', 'BeneficiaryMobile': '03001234567'},
+        {'BeneficiaryName': 'Ahmed', 'BeneficiaryMobile': '0345'},
+    ]
+    results = [
+        {'status': 'PASS', 'errors': []},
+        {'status': 'FAIL', 'errors': [
+            {'col': 1, 'field': 'BeneficiaryMobile', 'msg': 'Mobile number format invalid', 'expected': '03XXXXXXXXX', 'actual': '0345'}
+        ]},
+    ]
+
+    passed_bytes, rejected_bytes = generate_validated_excel_streams(rows, results, ['BeneficiaryName', 'BeneficiaryMobile'], 'web_based')
+
+    passed_wb = openpyxl.load_workbook(io.BytesIO(passed_bytes), data_only=False)
+    passed_ws = passed_wb.active
+    assert passed_ws.cell(row=1, column=3).value == 'Validation Status'
+    assert passed_ws.cell(row=2, column=3).value == 'VALID'
+    assert passed_ws.cell(row=1, column=3).fill.fgColor.rgb == 'FF0E8348'
+
+    rejected_wb = openpyxl.load_workbook(io.BytesIO(rejected_bytes), data_only=False)
+    rejected_ws = rejected_wb.active
+    assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 1).value == 'Validation Status'
+    assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 2).value == 'Error Reason'
+    assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 3).value == 'Suggested Fix'
+    assert rejected_ws.cell(row=2, column=2).fill.fgColor.rgb == 'FFFDE2E2'
+    assert rejected_ws.cell(row=2, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 2).value is not None
+    assert 'Mobile number format invalid' in str(rejected_ws.cell(row=2, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 2).value)
+
+
+def test_generate_highlighted_validation_report_includes_all_rows_and_comments():
+    rows = [
+        {'Amount': '100', 'BeneficiaryName': 'Ali', 'BeneficiaryAccountNo': '123'},
+        {'Amount': '', 'BeneficiaryName': '', 'BeneficiaryAccountNo': '123'},
+    ]
+    results = [
+        {'status': 'PASS', 'errors': []},
+        {'status': 'FAIL', 'errors': [
+            {'col': 0, 'field': 'Amount', 'msg': 'Amount is required', 'expected': 'Non-empty value', 'actual': '(Empty)'},
+            {'col': 1, 'field': 'BeneficiaryName', 'msg': 'BeneficiaryName is required', 'expected': 'Non-empty value', 'actual': '(Empty)'}
+        ]},
+    ]
+
+    report_bytes = generate_highlighted_validation_report(rows, results, ['Amount', 'BeneficiaryName', 'BeneficiaryAccountNo'], 'web_based')
+    assert report_bytes.startswith(b'PK')
+
+    wb = openpyxl.load_workbook(io.BytesIO(report_bytes), data_only=True)
+    assert wb.sheetnames == ['Validation Report']
+    ws = wb.active
+    assert ws.max_row == 3
+    assert ws.cell(row=2, column=1).value == '100'
+    assert ws.cell(row=3, column=1).value in (None, '')
+    assert ws.cell(row=3, column=1).comment is not None
+    assert 'Amount is required' in ws.cell(row=3, column=1).comment.text
 
 
 def test_web_profile_bypasses_identity_and_enforces_mandatory_fields():

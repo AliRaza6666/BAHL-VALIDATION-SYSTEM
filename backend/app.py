@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import openpyxl
-from openpyxl.styles import PatternFill, Font
+from openpyxl.styles import PatternFill, Font, Border, Side, Alignment
 from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 
@@ -27,11 +27,25 @@ CORS(
     methods=["GET", "POST", "OPTIONS"],
 )
 
-ROOT = Path(__file__).resolve().parent
-RULES_PATH = ROOT / 'rules.json'
+BASE_DIR = Path(__file__).resolve().parent
+RULES_PATH = BASE_DIR / 'rules.json'
+UPLOAD_DIR = BASE_DIR / 'uploads'
+GENERATED_DIR = BASE_DIR / 'generated'
+LOG_DIR = BASE_DIR / 'logs'
+
+app.config['UPLOAD_FOLDER'] = str(UPLOAD_DIR)
+app.config['GENERATED_FOLDER'] = str(GENERATED_DIR)
 
 # Global cache for validated files (In-memory storage)
 VALIDATED_FILES_CACHE = {}
+
+
+def ensure_runtime_directories() -> None:
+    for directory in (UPLOAD_DIR, GENERATED_DIR, LOG_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+
+
+ensure_runtime_directories()
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error: Exception):
@@ -44,8 +58,16 @@ def log_request_context():
         print(f"[REQUEST] {request.method} {request.path}")
 
 def load_rules() -> Dict[str, Any]:
-    with RULES_PATH.open('r', encoding='utf-8') as fh:
-        return json.load(fh)
+    try:
+        with RULES_PATH.open('r', encoding='utf-8') as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        print('[STARTUP] rules.json not found; continuing with empty rules')
+        return {'profiles': {}}
+    except json.JSONDecodeError as exc:
+        print(f'[STARTUP] Invalid rules.json: {exc}')
+        return {'profiles': {}}
+
 
 RULES = load_rules()
 
@@ -231,7 +253,6 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
     
     # Precompute duplicates
     duplicate_tracker = {
-        "BeneficiaryAccountNo": {},
         "BeneficiaryAccountNumber": {}
     }
     for idx, row in enumerate(rows):
@@ -418,6 +439,87 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
         
     return validation_results
 
+def _build_excel_styles() -> Dict[str, Any]:
+    return {
+        'header_fill': PatternFill(start_color='FF0E8348', end_color='FF0E8348', fill_type='solid'),
+        'header_font': Font(color='FFFFFFFF', bold=True, size=12),
+        'header_alignment': Alignment(horizontal='center', vertical='center', wrap_text=True),
+        'error_fill': PatternFill(start_color='FFFDE2E2', end_color='FFFDE2E2', fill_type='solid'),
+        'error_border': Border(left=Side(style='thin', color='FFB91C1C'), right=Side(style='thin', color='FFB91C1C'), top=Side(style='thin', color='FFB91C1C'), bottom=Side(style='thin', color='FFB91C1C')),
+        'error_font': Font(color='FF8B0000', bold=True),
+        'status_valid_fill': PatternFill(start_color='FF0A6B3B', end_color='FF0A6B3B', fill_type='solid'),
+        'status_valid_font': Font(color='FFFFFFFF', bold=True),
+        'status_invalid_fill': PatternFill(start_color='FFD32F2F', end_color='FFD32F2F', fill_type='solid'),
+        'status_invalid_font': Font(color='FFFFFFFF', bold=True),
+        'summary_pass_fill': PatternFill(start_color='FF0A6B3B', end_color='FF0A6B3B', fill_type='solid'),
+        'summary_fail_fill': PatternFill(start_color='FFD32F2F', end_color='FFD32F2F', fill_type='solid'),
+        'summary_time_fill': PatternFill(start_color='FFE5E7EB', end_color='FFE5E7EB', fill_type='solid'),
+        'body_alignment': Alignment(vertical='top', wrap_text=True),
+    }
+
+
+def _apply_sheet_styling(ws, styles: Dict[str, Any]) -> None:
+    for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=ws.max_row), start=1):
+        for cell in row:
+            if row_idx == 1:
+                cell.fill = styles['header_fill']
+                cell.font = styles['header_font']
+                cell.alignment = styles['header_alignment']
+            else:
+                cell.alignment = styles['body_alignment']
+                if cell.value is None:
+                    cell.value = ''
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col) if col else 12
+        col_letter = get_column_letter(col[0].column) if col else 'A'
+        width = min(max(max_len + 3, 15), 40)
+        ws.column_dimensions[col_letter].width = width
+
+    if ws.max_row > 1:
+        ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+        ws.freeze_panes = 'A2'
+        ws.sheet_view.showGridLines = True
+
+
+def _humanize_error(error: Dict[str, Any]) -> str:
+    msg = (error.get('msg') or 'Validation error').strip()
+    if msg.endswith('.'):
+        return msg
+    return msg + '.'
+
+
+def _suggested_fix(error: Dict[str, Any]) -> str:
+    msg = (error.get('msg') or '').lower()
+    if 'iban' in msg:
+        return 'Use a valid 24-character IBAN.'
+    if 'mobile' in msg:
+        return 'Use the format 03XXXXXXXXX.'
+    if 'cnic' in msg:
+        return 'Provide a valid 13-digit CNIC.'
+    if 'ntn' in msg:
+        return 'Provide a valid NTN value.'
+    if 'duplicate' in msg:
+        return 'Use a unique account number.'
+    if 'required' in msg or 'missing' in msg:
+        return 'Fill in the required field.'
+    if 'header' in msg:
+        return 'Correct the column header name.'
+    if 'spaces' in msg:
+        return 'Remove leading/trailing spaces.'
+    if 'format' in msg:
+        return 'Use the expected cell format.'
+    return 'Review the value and correct the issue.'
+
+
+def _build_error_summary(errors: List[Dict[str, Any]]) -> str:
+    return ' | '.join(_humanize_error(err) for err in errors) if errors else 'None'
+
+
+def _build_suggested_fix_summary(errors: List[Dict[str, Any]]) -> str:
+    return ' ; '.join(_suggested_fix(err) for err in errors) if errors else 'No action required.'
+
+
 def generate_highlighted_validation_report(rows, results, headers, profile):
     """Generate a validation report with all rows, highlighting error cells with red background and comments."""
     normalized_headers = list(headers or [])
@@ -432,9 +534,7 @@ def generate_highlighted_validation_report(rows, results, headers, profile):
     # Add headers
     ws_report.append(normalized_headers)
     
-    # Define styling
-    red_fill = PatternFill(start_color='FFFF0000', end_color='FFFF0000', fill_type='solid')
-    white_bold_font = Font(color='FFFFFFFF', bold=True)
+    styles = _build_excel_styles()
     
     # Create a mapping from field names to column indices for easy error cell highlighting
     field_to_col = {header: idx + 1 for idx, header in enumerate(normalized_headers)}
@@ -459,9 +559,10 @@ def generate_highlighted_validation_report(rows, results, headers, profile):
                 
                 if col_idx:
                     cell = ws_report.cell(row=current_row, column=col_idx)
-                    # Apply red background and white bold font
-                    cell.fill = red_fill
-                    cell.font = white_bold_font
+                    cell.fill = styles['error_fill']
+                    cell.font = styles['error_font']
+                    cell.border = styles['error_border']
+                    cell.alignment = styles['body_alignment']
                     # Add comment with error message
                     error_msg = error.get('msg', 'Validation Error')
                     if error.get('expected'):
@@ -470,16 +571,7 @@ def generate_highlighted_validation_report(rows, results, headers, profile):
                         error_msg += f"\nActual: {error['actual']}"
                     cell.comment = Comment(error_msg, 'Validator')
     
-    # Format the report
-    for col in ws_report.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col) if col else 12
-        col_letter = get_column_letter(col[0].column) if col else 'A'
-        ws_report.column_dimensions[col_letter].width = max(max_len + 3, 12)
-    
-    if ws_report.max_row > 1:
-        ws_report.auto_filter.ref = f"A1:{get_column_letter(ws_report.max_column)}{ws_report.max_row}"
-        ws_report.views.sheetView[0].showGridLines = True
-        ws_report.freeze_panes = 'A2'
+    _apply_sheet_styling(ws_report, styles)
     
     # Serialize to bytes
     report_stream = io.BytesIO()
@@ -498,6 +590,8 @@ def generate_validated_excel_streams(rows, results, headers, profile):
     if not normalized_headers:
         normalized_headers = ['Column1']
 
+    styles = _build_excel_styles()
+
     # Create workbooks for passed and rejected records
     wb_passed = openpyxl.Workbook()
     ws_passed = wb_passed.active
@@ -507,10 +601,7 @@ def generate_validated_excel_streams(rows, results, headers, profile):
     wb_rejected = openpyxl.Workbook()
     ws_rejected = wb_rejected.active
     ws_rejected.title = 'Sheet'
-    ws_rejected.append(normalized_headers + ['Validation Status', 'Validation Errors'])
-
-    red_fill = PatternFill(start_color='FFFF0000', end_color='FFFF0000', fill_type='solid')
-    white_bold_font = Font(color='FFFFFFFF', bold=True)
+    ws_rejected.append(normalized_headers + ['Validation Status', 'Error Reason', 'Suggested Fix'])
 
     # Build the passed and rejected workbooks row by row
     for idx, row in enumerate(rows):
@@ -521,33 +612,106 @@ def generate_validated_excel_streams(rows, results, headers, profile):
         row_values = [row.get(h, '') for h in normalized_headers]
 
         if result['status'] == 'PASS':
-            ws_passed.append(row_values + ['PASS'])
+            ws_passed.append(row_values + ['VALID'])
         else:
-            # Build error message from all errors in this row
-            err_messages = [err['msg'] for err in result.get('errors', [])]
-            ws_rejected.append(row_values + ['FAIL', '; '.join(err_messages)])
-            
-            # Color the failed cells red and add comments
-            for err in result.get('errors', []):
+            errors = result.get('errors', [])
+            error_summary = _build_error_summary(errors)
+            suggested_fix = _build_suggested_fix_summary(errors)
+            ws_rejected.append(row_values + ['INVALID', error_summary, suggested_fix])
+            rejected_row_number = ws_rejected.max_row
+
+            for err in errors:
                 col_idx = err.get('col')
                 if col_idx is not None and col_idx < len(normalized_headers):
-                    cell = ws_rejected.cell(row=idx + 2, column=col_idx + 1)
-                    cell.fill = red_fill
-                    cell.font = white_bold_font
-                    comment_text = f"Rule: {err.get('field', 'Validation')}\nExpected: {err['expected']}\nActual: {err['actual']}"
-                    cell.comment = Comment(comment_text, 'SEVS')
+                    cell = ws_rejected.cell(row=rejected_row_number, column=col_idx + 1)
+                    cell.fill = styles['error_fill']
+                    cell.font = styles['error_font']
+                    cell.border = styles['error_border']
+                    cell.alignment = styles['body_alignment']
+                    comment_text = f"{_humanize_error(err)}\nExpected: {err.get('expected', 'See rule')}\nActual: {err.get('actual', 'Invalid value')}"
+                    cell.comment = Comment(comment_text, 'Validator')
+
+    # Style passed sheet status column
+    for row in ws_passed.iter_rows(min_row=2, max_row=ws_passed.max_row):
+        status_cell = row[-1]
+        status_cell.fill = styles['status_valid_fill']
+        status_cell.font = styles['status_valid_font']
+        status_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    # Style rejected sheet status and error columns
+    for row in ws_rejected.iter_rows(min_row=2, max_row=ws_rejected.max_row):
+        status_cell = row[len(normalized_headers)]
+        status_cell.fill = styles['status_invalid_fill']
+        status_cell.font = styles['status_invalid_font']
+        status_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+        for col_idx in range(len(normalized_headers) + 1, ws_rejected.max_column + 1):
+            cell = row[col_idx - 1]
+            cell.alignment = styles['body_alignment']
+            if cell.value is None:
+                cell.value = ''
 
     # Format both workbooks
     for ws in [ws_passed, ws_rejected]:
-        for col in ws.columns:
-            max_len = max(len(str(cell.value or '')) for cell in col) if col else 12
-            col_letter = get_column_letter(col[0].column) if col else 'A'
-            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
-        
+        _apply_sheet_styling(ws, styles)
         if ws.max_row > 1:
-            ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
-            ws.views.sheetView[0].showGridLines = True
-            ws.freeze_panes = 'A2'
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                for cell in row:
+                    cell.alignment = styles['body_alignment']
+                    if cell.value is None:
+                        cell.value = ''
+
+    # Serialize to bytes
+    passed_stream = io.BytesIO()
+    wb_passed.save(passed_stream)
+    passed_stream.seek(0)
+
+    rejected_stream = io.BytesIO()
+    wb_rejected.save(rejected_stream)
+    rejected_stream.seek(0)
+
+    return passed_stream.getvalue(), rejected_stream.getvalue()
+
+
+def generate_validation_summary_workbook(rows, results, filename_base: str = 'Validation') -> bytes:
+    """Generate a summary workbook with banking-style styling."""
+    wb_summary = openpyxl.Workbook()
+    ws_summary = wb_summary.active
+    ws_summary.title = 'ValidationSummary'
+
+    styles = _build_excel_styles()
+    passed_count = sum(1 for result in results if result.get('status') == 'PASS')
+    rejected_count = len(results) - passed_count
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+
+    ws_summary.append(['Metric', 'Value'])
+    ws_summary.append(['Total Records', len(rows)])
+    ws_summary.append(['Passed', passed_count])
+    ws_summary.append(['Rejected', rejected_count])
+    ws_summary.append(['Timestamp', timestamp])
+
+    for row_idx, row in enumerate(ws_summary.iter_rows(min_row=1, max_row=ws_summary.max_row), start=1):
+        for cell in row:
+            if row_idx == 1:
+                cell.fill = styles['header_fill']
+                cell.font = styles['header_font']
+                cell.alignment = styles['header_alignment']
+            else:
+                cell.alignment = styles['body_alignment']
+
+    ws_summary.cell(row=2, column=2).fill = styles['summary_pass_fill']
+    ws_summary.cell(row=2, column=2).font = styles['status_valid_font']
+    ws_summary.cell(row=3, column=2).fill = styles['summary_fail_fill']
+    ws_summary.cell(row=3, column=2).font = styles['status_invalid_font']
+    ws_summary.cell(row=4, column=2).fill = styles['summary_time_fill']
+    ws_summary.cell(row=4, column=2).font = Font(color='FF4B5563', bold=True)
+
+    _apply_sheet_styling(ws_summary, styles)
+
+    summary_stream = io.BytesIO()
+    wb_summary.save(summary_stream)
+    summary_stream.seek(0)
+    return summary_stream.getvalue()
 
     # Serialize to bytes
     passed_stream = io.BytesIO()
@@ -562,23 +726,23 @@ def generate_validated_excel_streams(rows, results, headers, profile):
 
 @app.route('/')
 def index():
-    return send_from_directory(ROOT, 'index.html')
+    return send_from_directory(BASE_DIR, 'index.html')
 
 @app.route('/style.css')
 def serve_css():
-    return send_from_directory(ROOT, 'style.css')
+    return send_from_directory(BASE_DIR, 'style.css')
 
 @app.route('/tailwind.generated.css')
 def serve_tailwind_css():
-    return send_from_directory(ROOT, 'tailwind.generated.css')
+    return send_from_directory(BASE_DIR, 'tailwind.generated.css')
 
 @app.route('/main.js')
 def serve_js():
-    return send_from_directory(ROOT, 'main.js')
+    return send_from_directory(BASE_DIR, 'main.js')
 
 @app.route('/rules.json')
 def serve_rules():
-    return send_from_directory(ROOT, 'rules.json')
+    return send_from_directory(BASE_DIR, 'rules.json')
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -677,23 +841,21 @@ def validate_endpoint():
     end_time = time.time()
     duration = f"{end_time - start_time:.2f} sec"
 
-    # Generate the two files from the normalized rows
-    passed_file, rejected_file = generate_validated_excel_streams(rows, results, headers, active_profile)
-    
-    # Generate the highlighted validation report
-    highlighted_report = generate_highlighted_validation_report(rows, results, headers, active_profile)
-
     # Extract original filename without extension, and get file extension
     original_filename = uploaded_file.filename or 'ValidationReport'
     file_name_base = Path(original_filename).stem  # Name without extension
     file_extension = Path(original_filename).suffix or '.xlsx'  # Keep original extension or default to .xlsx
 
+    # Generate the highlighted validation report for all original rows
+    highlighted_report = generate_highlighted_validation_report(rows, results, headers, active_profile)
+    validation_summary = generate_validation_summary_workbook(rows, results, file_name_base)
+
     # Cache the resulting byte streams with original filename
     file_id = str(uuid.uuid4())
     VALIDATED_FILES_CACHE[file_id] = {
-        "passed": passed_file,
-        "rejected": rejected_file,
+        "report": highlighted_report,
         "highlighted": highlighted_report,
+        "summary": validation_summary,
         "filename_base": file_name_base,
         "file_extension": file_extension,
         "passed_count": sum(1 for r in results if r['status'] == 'PASS'),
@@ -752,38 +914,56 @@ def analyze_api_endpoint():
 def validate_api_endpoint():
     return validate_endpoint()
 
-@app.route('/download/passed/<file_id>', methods=['GET'])
-def download_passed(file_id):
+@app.route('/download/report/<file_id>', methods=['GET'])
+def download_report(file_id):
     if file_id not in VALIDATED_FILES_CACHE:
         return "File not found or expired", 404
-    data = VALIDATED_FILES_CACHE[file_id]["passed"]
+
+    data = VALIDATED_FILES_CACHE[file_id]
+    report_bytes = data.get("report") or data.get("highlighted")
+    if not report_bytes:
+        return "Validation report not available", 404
+
+    filename_base = data.get("filename_base") or 'Validation_Report'
+    download_name = f"{filename_base}_Validation_Report.xlsx"
     return send_file(
-        io.BytesIO(data),
+        io.BytesIO(report_bytes),
         as_attachment=True,
-        download_name="Passed_Records.xlsx",
+        download_name=download_name,
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+@app.route('/api/download/report/<file_id>', methods=['GET'])
+def download_report_api(file_id):
+    return download_report(file_id)
+
+@app.route('/download/passed/<file_id>', methods=['GET'])
+def download_passed(file_id):
+    return download_report(file_id)
 
 @app.route('/api/download/passed/<file_id>', methods=['GET'])
 def download_passed_api(file_id):
-    return download_passed(file_id)
+    return download_report(file_id)
 
 @app.route('/download/rejected/<file_id>', methods=['GET'])
 def download_rejected(file_id):
-    if file_id not in VALIDATED_FILES_CACHE:
-        return "File not found or expired", 404
-    data = VALIDATED_FILES_CACHE[file_id]["rejected"]
-    return send_file(
-        io.BytesIO(data),
-        as_attachment=True,
-        download_name="Rejected_Records.xlsx",
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    return download_report(file_id)
 
 @app.route('/api/download/rejected/<file_id>', methods=['GET'])
 def download_rejected_api(file_id):
-    return download_rejected(file_id)
+    return download_report(file_id)
 
 if __name__ == '__main__':
-    print('Server started on port 5001')
-    app.run(host='127.0.0.1', port=5001, debug=True)
+    try:
+        print('Backend starting')
+        print('Loading rules')
+        load_rules()
+        ensure_runtime_directories()
+        print('Rules loaded')
+        print('Upload directory ready')
+        print('Generated directory ready')
+        print('Server running on: http://127.0.0.1:5001')
+        app.run(host='127.0.0.1', port=5001, debug=True, use_reloader=False)
+    except Exception as exc:
+        print(f"[ERROR] Startup failed: {exc}")
+        raise
