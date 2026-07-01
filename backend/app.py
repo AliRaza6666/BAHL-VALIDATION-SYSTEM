@@ -14,21 +14,28 @@ from openpyxl.utils import get_column_letter
 
 from flask import Flask, jsonify, request, send_file, Response, send_from_directory
 from flask_cors import CORS
+import importlib.metadata
+import werkzeug
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import HTTPException
+
+try:
+    werkzeug.__version__
+except AttributeError:
+    try:
+        werkzeug.__version__ = importlib.metadata.version('werkzeug')
+    except Exception:
+        werkzeug.__version__ = '3.1.8'
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
 
 CORS(
     app,
-    resources={r"/*": {"origins": [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://bahl-excel-validator.vercel.app"
-    ]}},
-    supports_credentials=True,
-    allow_headers=["Content-Type", "Authorization"],
+    resources={r"/*": {"origins": "*"}},
+    allow_headers=["Content-Type"],
     methods=["GET", "POST", "OPTIONS"],
+    supports_credentials=False,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -53,8 +60,15 @@ ensure_runtime_directories()
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error: Exception):
+    if isinstance(error, HTTPException):
+        return jsonify({"success": False, "message": error.description}), error.code
     print(f"[ERROR] Unhandled exception: {error}")
     return jsonify({"success": False, "message": "Excel processing failed"}), 500
+
+
+@app.route('/', methods=['GET'])
+def root():
+    return jsonify({"status": "ok", "message": "BAHL Validation System backend is running"})
 
 @app.before_request
 def log_request_context():
@@ -81,6 +95,26 @@ XLSX_MIME_TYPES = {
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml'
 }
 XLS_MIME_TYPES = {'application/vnd.ms-excel', 'application/xls'}
+
+XLSX_TEXT_TYPES = {'s', 'str', 'inlineStr'}
+XLSX_NUMERIC_TYPES = {'n'}
+XLSX_DATE_TYPES = {'d'}
+XLSX_BOOLEAN_TYPES = {'b'}
+XLSX_FORMULA_TYPES = {'f'}
+XLSX_ERROR_TYPES = {'e'}
+
+TEXT_ONLY_FIELDS = {
+    'BeneficiaryName',
+    'Amount',
+    'BeneficiaryMobile',
+    'BeneficiaryNumber',
+    'BeneficiaryIdentificationType',
+    'BeneficiaryIdentificationNo',
+    'BeneficiaryIBAN',
+    'BeneficiaryAccountNumber',
+    'BeneficiaryAccountNo',
+    'ProductTypeCode'
+}
 
 
 def detect_excel_format(filename: Optional[str], mime_type: Optional[str], file_bytes: Optional[bytes]) -> Dict[str, Any]:
@@ -120,16 +154,77 @@ def detect_excel_format(filename: Optional[str], mime_type: Optional[str], file_
     return {'kind': 'unsupported', 'reason': 'Unsupported Excel format'}
 
 
-def _to_cell_text(value: Any) -> str:
+def _to_cell_text(value: Any, excel_type: str = 'text') -> str:
     if value is None:
         return ''
+    if excel_type == 'text' and isinstance(value, str):
+        return value
     if isinstance(value, float):
         if value.is_integer():
             return str(int(value))
         return str(value).rstrip('0').rstrip('.') if '.' in str(value) else str(value)
     if isinstance(value, bool):
         return str(value)
-    return str(value).strip()
+    return str(value)
+
+
+def _openpyxl_cell_type_label(cell) -> str:
+    dtype = getattr(cell, 'data_type', None)
+    if dtype in XLSX_TEXT_TYPES:
+        return 'text'
+    if dtype in XLSX_NUMERIC_TYPES:
+        return 'number'
+    if dtype in XLSX_DATE_TYPES:
+        return 'date'
+    if dtype in XLSX_BOOLEAN_TYPES:
+        return 'boolean'
+    if dtype in XLSX_FORMULA_TYPES:
+        return 'formula'
+    if dtype in XLSX_ERROR_TYPES:
+        return 'error'
+    if isinstance(cell.value, str):
+        return 'text'
+    if isinstance(cell.value, (int, float)):
+        return 'number'
+    return 'text'
+
+
+def _xlrd_cell_type_label(cell_type: int) -> str:
+    try:
+        import xlrd
+        if cell_type == xlrd.XL_CELL_TEXT:
+            return 'text'
+        if cell_type == xlrd.XL_CELL_NUMBER:
+            return 'number'
+        if cell_type == xlrd.XL_CELL_DATE:
+            return 'date'
+        if cell_type == xlrd.XL_CELL_BOOLEAN:
+            return 'boolean'
+        if cell_type == xlrd.XL_CELL_ERROR:
+            return 'error'
+        return 'text'
+    except Exception:
+        return 'text'
+
+
+def _clean_text_for_validation(value: str) -> str:
+    return value.strip() if isinstance(value, str) else _to_cell_text(value)
+
+
+def _get_row_cell_meta(row: Dict[str, Any], field: str) -> Dict[str, Any]:
+    return row.get('_meta', {}).get(field, {})
+
+
+def _has_hidden_whitespace(value: str) -> bool:
+    if not isinstance(value, str) or value == '':
+        return False
+    return bool(re.search(r'[\u00A0\u200B\u200C\u200D\uFEFF]', value))
+
+
+def _has_multiple_spaces(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    return bool(re.search(r' {2,}', value))
 
 
 def parse_excel_workbook(file_bytes: bytes, filename: Optional[str], mime_type: Optional[str]) -> tuple[List[str], List[Dict[str, str]], str]:
@@ -150,16 +245,32 @@ def parse_excel_workbook(file_bytes: bytes, filename: Optional[str], mime_type: 
             headers: List[str] = []
             rows: List[Dict[str, str]] = []
 
-            for row_index, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
-                values = [_to_cell_text(value) for value in row]
+            for row_index, row in enumerate(worksheet.iter_rows(), start=1):
                 if row_index == 1:
-                    headers = values
+                    headers = [_to_cell_text(cell.value, _openpyxl_cell_type_label(cell)) for cell in row]
                     continue
-                if not any(values):
+
+                row_data: Dict[str, Any] = {}
+                row_meta: Dict[str, Any] = {}
+                has_value = False
+
+                for col_idx, cell in enumerate(row):
+                    header = headers[col_idx] if col_idx < len(headers) else f'Column{col_idx + 1}'
+                    cell_type = _openpyxl_cell_type_label(cell)
+                    cell_text = _to_cell_text(cell.value, cell_type)
+                    if cell_text != '':
+                        has_value = True
+                    row_data[header or f'Column{col_idx + 1}'] = cell_text
+                    row_meta[header or f'Column{col_idx + 1}'] = {
+                        'excel_type': cell_type,
+                        'raw_value': cell.value,
+                        'text': cell_text
+                    }
+
+                if not has_value:
                     continue
-                row_data = {}
-                for col_idx, header in enumerate(headers):
-                    row_data[header or f'Column{col_idx + 1}'] = values[col_idx] if col_idx < len(values) else ''
+
+                row_data['_meta'] = row_meta
                 rows.append(row_data)
 
             workbook.close()
@@ -179,15 +290,40 @@ def parse_excel_workbook(file_bytes: bytes, filename: Optional[str], mime_type: 
         rows: List[Dict[str, str]] = []
 
         for row_index in range(worksheet.nrows):
-            values = [_to_cell_text(worksheet.cell_value(row_index, col_index)) for col_index in range(worksheet.ncols)]
             if row_index == 0:
-                headers = values
+                headers = [_to_cell_text(worksheet.cell_value(row_index, col_index), 'text') for col_index in range(worksheet.ncols)]
                 continue
-            if not any(values):
+
+            row_data: Dict[str, Any] = {}
+            row_meta: Dict[str, Any] = {}
+            has_value = False
+
+            for col_idx in range(worksheet.ncols):
+                cell = worksheet.cell(row_index, col_idx)
+                cell_type = _xlrd_cell_type_label(cell.ctype)
+                cell_value = cell.value
+                if cell_type == 'date':
+                    try:
+                        cell_text = str(xlrd.xldate_as_datetime(cell_value, workbook.datemode))
+                    except Exception:
+                        cell_text = _to_cell_text(cell_value, cell_type)
+                else:
+                    cell_text = _to_cell_text(cell_value, cell_type)
+
+                if cell_text != '':
+                    has_value = True
+                header = headers[col_idx] if col_idx < len(headers) else f'Column{col_idx + 1}'
+                row_data[header or f'Column{col_idx + 1}'] = cell_text
+                row_meta[header or f'Column{col_idx + 1}'] = {
+                    'excel_type': cell_type,
+                    'raw_value': cell_value,
+                    'text': cell_text
+                }
+
+            if not has_value:
                 continue
-            row_data = {}
-            for col_idx, header in enumerate(headers):
-                row_data[header or f'Column{col_idx + 1}'] = values[col_idx] if col_idx < len(values) else ''
+
+            row_data['_meta'] = row_meta
             rows.append(row_data)
 
         print(f"[UPLOAD] Rows extracted: {len(rows)}")
@@ -271,144 +407,207 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
         errors = []
         profile_rules = rules['profiles'][profile]
         mandatory_fields = profile_rules['mandatory']
-        
+
+        row_meta = row.get('_meta', {})
+
+        def report_type_error(field_name, actual_type, msg=None):
+            errors.append({
+                'col': header_map.get(field_name),
+                'field': field_name,
+                'msg': msg or 'Cell format is not text',
+                'expected': 'Text',
+                'actual': actual_type
+            })
+
+        def report_space_error(field_name, actual_value, msg=None):
+            errors.append({
+                'col': header_map.get(field_name),
+                'field': field_name,
+                'msg': msg or 'Leading/trailing spaces not allowed',
+                'expected': 'Text without extra spaces',
+                'actual': actual_value
+            })
+
+        # 0. Required text-only fields should be stored as text
+        for field in TEXT_ONLY_FIELDS:
+            if field not in header_map:
+                continue
+            raw_meta = row_meta.get(field, {})
+            excel_type = raw_meta.get('excel_type', 'text')
+            actual_value = raw_meta.get('text', row.get(field, ''))
+            if actual_value != '':
+                if excel_type != 'text':
+                    report_type_error(field, excel_type, 'Cell format is not Text')
+                if isinstance(actual_value, str):
+                    if actual_value != actual_value.strip():
+                        report_space_error(field, actual_value, 'Leading/trailing spaces not allowed')
+                    elif _has_multiple_spaces(actual_value):
+                        report_space_error(field, actual_value, 'Multiple spaces are not allowed')
+                    elif _has_hidden_whitespace(actual_value):
+                        report_space_error(field, actual_value, 'Hidden whitespace characters are not allowed')
+
         # 1. Mandatory Fields Check
         for field in mandatory_fields:
-            val = row.get(field, '').strip()
-            if not val:
+            val = row.get(field, '')
+            if isinstance(val, str):
+                if val.strip() == '':
+                    errors.append({
+                        'col': header_map.get(field),
+                        'field': field,
+                        'msg': f'{field} is required',
+                        'expected': 'Non-empty value',
+                        'actual': '(Empty)'
+                    })
+            else:
                 errors.append({
-                    "col": header_map.get(field),
-                    "field": field,
-                    "msg": f"{field} is required",
-                    "expected": "Non-empty value",
-                    "actual": "(Empty)"
+                    'col': header_map.get(field),
+                    'field': field,
+                    'msg': f'{field} is required',
+                    'expected': 'Text',
+                    'actual': type(val).__name__
                 })
 
         # 2. Amount Check
-        amount_val = row.get('Amount', '').strip()
+        amount_val_raw = row.get('Amount', '')
+        amount_val = amount_val_raw.strip() if isinstance(amount_val_raw, str) else _to_cell_text(amount_val_raw)
         if amount_val:
             try:
                 amount_float = float(amount_val)
                 if amount_float <= 0:
                     errors.append({
-                        "col": header_map.get('Amount'),
-                        "field": "Amount",
-                        "msg": "Amount must be greater than 0",
-                        "expected": "Number > 0",
-                        "actual": amount_val
+                        'col': header_map.get('Amount'),
+                        'field': 'Amount',
+                        'msg': 'Amount must be greater than 0',
+                        'expected': 'Number > 0',
+                        'actual': amount_val
                     })
             except ValueError:
                 errors.append({
-                    "col": header_map.get('Amount'),
-                    "field": "Amount",
-                    "msg": "Amount must be a numeric value",
-                    "expected": "Numeric value",
-                    "actual": amount_val
+                    'col': header_map.get('Amount'),
+                    'field': 'Amount',
+                    'msg': 'Amount must be a numeric value',
+                    'expected': 'Numeric value',
+                    'actual': amount_val
                 })
 
         # 3. Mobile/Telecom check
         mobile_field = 'BeneficiaryNumber' if profile == '1link' else 'BeneficiaryMobile'
-        mobile_val = row.get(mobile_field, '').strip()
+        mobile_val_raw = row.get(mobile_field, '')
+        mobile_val = mobile_val_raw.strip() if isinstance(mobile_val_raw, str) else _to_cell_text(mobile_val_raw)
         if mobile_val:
             if not re.fullmatch(r'\+?\d{10,15}', mobile_val):
                 errors.append({
-                    "col": header_map.get(mobile_field),
-                    "field": mobile_field,
-                    "msg": "Mobile number must be 11 digits",
-                    "expected": "Telecom format (11 digits)",
-                    "actual": mobile_val
+                    'col': header_map.get(mobile_field),
+                    'field': mobile_field,
+                    'msg': 'Mobile number must be 11 digits',
+                    'expected': 'Telecom format (11 digits)',
+                    'actual': mobile_val
                 })
 
         # 4. Identity validation (Profile A/raast only)
         if profile == 'raast':
-            id_type = row.get('BeneficiaryIdentificationType', '').strip()
-            id_no = row.get('BeneficiaryIdentificationNo', '').strip()
-            iban = row.get('BeneficiaryIBAN', '').strip()
+            id_type_raw = row.get('BeneficiaryIdentificationType', '')
+            id_type = id_type_raw.strip() if isinstance(id_type_raw, str) else _to_cell_text(id_type_raw)
+            id_no_raw = row.get('BeneficiaryIdentificationNo', '')
+            id_no = id_no_raw.strip() if isinstance(id_no_raw, str) else _to_cell_text(id_no_raw)
+            iban_raw = row.get('BeneficiaryIBAN', '')
+            iban = iban_raw.strip() if isinstance(iban_raw, str) else _to_cell_text(iban_raw)
             
             if id_type:
                 if id_type not in ['CNIC', 'NTN']:
                     errors.append({
-                        "col": header_map.get('BeneficiaryIdentificationType'),
-                        "field": "BeneficiaryIdentificationType",
-                        "msg": "Identification Type must be CNIC or NTN",
-                        "expected": "CNIC or NTN",
-                        "actual": id_type
+                        'col': header_map.get('BeneficiaryIdentificationType'),
+                        'field': 'BeneficiaryIdentificationType',
+                        'msg': 'Identification Type must be CNIC or NTN',
+                        'expected': 'CNIC or NTN',
+                        'actual': id_type
                     })
                 if id_no:
                     if id_type == 'CNIC':
                         if not id_no.isdigit():
                             errors.append({
-                                "col": header_map.get('BeneficiaryIdentificationNo'),
-                                "field": "BeneficiaryIdentificationNo",
-                                "msg": "CNIC must be numeric",
-                                "expected": "Numeric value",
-                                "actual": id_no
+                                'col': header_map.get('BeneficiaryIdentificationNo'),
+                                'field': 'BeneficiaryIdentificationNo',
+                                'msg': 'CNIC must be numeric',
+                                'expected': 'Numeric value',
+                                'actual': id_no
                             })
                         elif len(id_no) != 13:
                             errors.append({
-                                "col": header_map.get('BeneficiaryIdentificationNo'),
-                                "field": "BeneficiaryIdentificationNo",
-                                "msg": "CNIC must be exactly 13 digits",
-                                "expected": "13 digits (numeric)",
-                                "actual": id_no
+                                'col': header_map.get('BeneficiaryIdentificationNo'),
+                                'field': 'BeneficiaryIdentificationNo',
+                                'msg': 'CNIC must be exactly 13 digits',
+                                'expected': '13 digits (numeric)',
+                                'actual': id_no
                             })
                     elif id_type == 'NTN':
                         if not re.fullmatch(r'[A-Za-z0-9]{8}', id_no):
                             if len(id_no) != 8:
                                 errors.append({
-                                    "col": header_map.get('BeneficiaryIdentificationNo'),
-                                    "field": "BeneficiaryIdentificationNo",
-                                    "msg": "NTN must be exactly 8 characters",
-                                    "expected": "8 chars",
-                                    "actual": id_no
+                                    'col': header_map.get('BeneficiaryIdentificationNo'),
+                                    'field': 'BeneficiaryIdentificationNo',
+                                    'msg': 'NTN must be exactly 8 characters',
+                                    'expected': '8 chars',
+                                    'actual': id_no
                                 })
                             else:
                                 errors.append({
-                                    "col": header_map.get('BeneficiaryIdentificationNo'),
-                                    "field": "BeneficiaryIdentificationNo",
-                                    "msg": "NTN must be alphanumeric",
-                                    "expected": "Alphanumeric",
-                                    "actual": id_no
+                                    'col': header_map.get('BeneficiaryIdentificationNo'),
+                                    'field': 'BeneficiaryIdentificationNo',
+                                    'msg': 'NTN must be alphanumeric',
+                                    'expected': 'Alphanumeric',
+                                    'actual': id_no
                                 })
                 else:
                     errors.append({
-                        "col": header_map.get('BeneficiaryIdentificationNo'),
-                        "field": "BeneficiaryIdentificationNo",
-                        "msg": "Identification Number is required",
-                        "expected": "ID Number",
-                        "actual": "(Empty)"
+                        'col': header_map.get('BeneficiaryIdentificationNo'),
+                        'field': 'BeneficiaryIdentificationNo',
+                        'msg': 'Identification Number is required',
+                        'expected': 'ID Number',
+                        'actual': '(Empty)'
                     })
             elif id_no:
                 errors.append({
-                    "col": header_map.get('BeneficiaryIdentificationType'),
-                    "field": "BeneficiaryIdentificationType",
-                    "msg": "Identification Type is required",
-                    "expected": "CNIC or NTN",
-                    "actual": "(Empty)"
+                    'col': header_map.get('BeneficiaryIdentificationType'),
+                    'field': 'BeneficiaryIdentificationType',
+                    'msg': 'Identification Type is required',
+                    'expected': 'CNIC or NTN',
+                    'actual': '(Empty)'
                 })
 
-            # IBAN check
+            # 5. IBAN / Account Number rule
+            iban_field = 'BeneficiaryIBAN'
             if iban:
-                if len(iban) != 24 or not iban.isalnum() or not iban.isupper():
-                    errors.append({
-                        "col": header_map.get('BeneficiaryIBAN'),
-                        "field": "BeneficiaryIBAN",
-                        "msg": "IBAN must be uppercase and 24 characters long",
-                        "expected": "24-char uppercase",
-                        "actual": iban
-                    })
+                if iban.startswith('PK'):
+                    if len(iban) != 24 or not iban.isalnum() or not iban.isupper():
+                        errors.append({
+                            'col': header_map.get(iban_field),
+                            'field': iban_field,
+                            'msg': 'IBAN invalid length or format',
+                            'expected': '24-char uppercase IBAN',
+                            'actual': iban
+                        })
+                else:
+                    if iban == '':
+                        errors.append({
+                            'col': header_map.get(iban_field),
+                            'field': iban_field,
+                            'msg': 'Account Number is required',
+                            'expected': 'Non-empty Account Number',
+                            'actual': '(Empty)'
+                        })
 
-        # 5. Duplicate Checks
+        # 6. Duplicate Checks
         for field in duplicate_tracker.keys():
             val = row.get(field, '').strip()
             if val and len(duplicate_tracker[field][val]) > 1:
                 errors.append({
-                    "col": header_map.get(field),
-                    "field": field,
-                    "msg": f"Duplicate {field} detected",
-                    "expected": "Unique value",
-                    "actual": val,
-                    "is_duplicate": True
+                    'col': header_map.get(field),
+                    'field': field,
+                    'msg': f'Duplicate {field} detected',
+                    'expected': 'Unique value',
+                    'actual': val,
+                    'is_duplicate': True
                 })
 
         if debug:
@@ -437,11 +636,12 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
                 print(f"[DEBUG] Processing Row {idx + 1} [Profile: {profile_label}] -> {detail} -> STATUS: PASS{bypass_suffix}")
 
         validation_results.append({
-            "status": "PASS" if not errors else "FAIL",
-            "errors": errors
+            'status': 'PASS' if not errors else 'FAIL',
+            'errors': errors
         })
         
     return validation_results
+
 
 def _build_excel_styles() -> Dict[str, Any]:
     return {
@@ -488,6 +688,25 @@ def _apply_sheet_styling(ws, styles: Dict[str, Any]) -> None:
 
 def _humanize_error(error: Dict[str, Any]) -> str:
     msg = (error.get('msg') or 'Validation error').strip()
+    field = (error.get('field') or '').strip().lower()
+    normalized = msg.lower()
+
+    if 'mobile' in normalized or 'beneficiarynumber' in field or 'beneficiarymobile' in field:
+        return 'Mobile number format invalid'
+    if 'iban' in normalized or 'beneficiaryiban' in field:
+        return 'IBAN must contain exactly 24 characters'
+    if 'cnic' in normalized or 'beneficiaryidentificationno' in field:
+        if 'required' in normalized or 'missing' in normalized:
+            return 'CNIC required'
+        return 'CNIC format invalid'
+    if 'duplicate' in normalized:
+        if 'mobile' in normalized or 'beneficiarynumber' in field or 'beneficiarymobile' in field:
+            return 'Duplicate Mobile Number'
+        return 'Duplicate record'
+    if 'required' in normalized or 'missing' in normalized:
+        return 'Missing mandatory field'
+    if 'numeric' in normalized or 'format' in normalized or 'wrong cell' in normalized:
+        return 'Wrong cell format'
     if msg.endswith('.'):
         return msg
     return msg + '.'
@@ -496,24 +715,24 @@ def _humanize_error(error: Dict[str, Any]) -> str:
 def _suggested_fix(error: Dict[str, Any]) -> str:
     msg = (error.get('msg') or '').lower()
     if 'iban' in msg:
-        return 'Use a valid 24-character IBAN.'
-    if 'mobile' in msg:
-        return 'Use the format 03XXXXXXXXX.'
-    if 'cnic' in msg:
-        return 'Provide a valid 13-digit CNIC.'
+        return 'Use 24-char IBAN'
+    if 'mobile' in msg or 'beneficiarynumber' in msg or 'beneficiarymobile' in msg:
+        return 'Use 03XXXXXXXXX'
+    if 'cnic' in msg or 'beneficiaryidentificationno' in msg:
+        return 'Provide valid CNIC'
     if 'ntn' in msg:
-        return 'Provide a valid NTN value.'
+        return 'Provide valid NTN value'
     if 'duplicate' in msg:
-        return 'Use a unique account number.'
+        return 'Remove duplicate'
     if 'required' in msg or 'missing' in msg:
-        return 'Fill in the required field.'
+        return 'Fill in required field'
     if 'header' in msg:
-        return 'Correct the column header name.'
+        return 'Correct header name'
     if 'spaces' in msg:
-        return 'Remove leading/trailing spaces.'
-    if 'format' in msg:
-        return 'Use the expected cell format.'
-    return 'Review the value and correct the issue.'
+        return 'Remove leading/trailing spaces'
+    if 'format' in msg or 'numeric' in msg:
+        return 'Convert to Text'
+    return 'Review and correct the value'
 
 
 def _build_error_summary(errors: List[Dict[str, Any]]) -> str:
@@ -522,6 +741,64 @@ def _build_error_summary(errors: List[Dict[str, Any]]) -> str:
 
 def _build_suggested_fix_summary(errors: List[Dict[str, Any]]) -> str:
     return ' ; '.join(_suggested_fix(err) for err in errors) if errors else 'No action required.'
+
+
+def generate_full_validation_report(rows, results, headers, profile):
+    normalized_headers = list(headers or [])
+    if not normalized_headers:
+        normalized_headers = ['Column1']
+
+    styles = _build_excel_styles()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'ValidatedReport'
+    ws.append(normalized_headers + ['Validation Status', 'Error Reason', 'Suggested Fix'])
+
+    for idx, row in enumerate(rows):
+        if idx >= len(results):
+            break
+
+        result = results[idx]
+        row_values = [row.get(header, '') for header in normalized_headers]
+        error_summary = _build_error_summary(result.get('errors', []))
+        suggested_fix = _build_suggested_fix_summary(result.get('errors', []))
+
+        ws.append(row_values + [result['status'], error_summary, suggested_fix])
+        current_row = idx + 2
+
+        if result.get('errors'):
+            for error in result['errors']:
+                field_name = error.get('field', '')
+                col_idx = next((i for i, h in enumerate(normalized_headers) if h == field_name), None)
+                if col_idx is not None:
+                    cell = ws.cell(row=current_row, column=col_idx + 1)
+                    cell.fill = styles['error_fill']
+                    cell.font = styles['error_font']
+                    cell.border = styles['error_border']
+                    cell.alignment = styles['body_alignment']
+                    comment_text = error.get('msg', 'Validation Error')
+                    if error.get('expected'):
+                        comment_text += f"\nExpected: {error['expected']}"
+                    if error.get('actual'):
+                        comment_text += f"\nActual: {error['actual']}"
+                    cell.comment = Comment(comment_text, 'Validator')
+
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        status_cell = row[len(normalized_headers)]
+        if status_cell.value == 'PASS':
+            status_cell.fill = styles['status_valid_fill']
+            status_cell.font = styles['status_valid_font']
+        else:
+            status_cell.fill = styles['status_invalid_fill']
+            status_cell.font = styles['status_invalid_font']
+        status_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+
+    _apply_sheet_styling(ws, styles)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
 
 
 def generate_highlighted_validation_report(rows, results, headers, profile):
@@ -616,12 +893,12 @@ def generate_validated_excel_streams(rows, results, headers, profile):
         row_values = [row.get(h, '') for h in normalized_headers]
 
         if result['status'] == 'PASS':
-            ws_passed.append(row_values + ['VALID'])
+            ws_passed.append(row_values + ['PASS'])
         else:
             errors = result.get('errors', [])
             error_summary = _build_error_summary(errors)
             suggested_fix = _build_suggested_fix_summary(errors)
-            ws_rejected.append(row_values + ['INVALID', error_summary, suggested_fix])
+            ws_rejected.append(row_values + ['FAIL', error_summary, suggested_fix])
             rejected_row_number = ws_rejected.max_row
 
             for err in errors:
@@ -677,6 +954,74 @@ def generate_validated_excel_streams(rows, results, headers, profile):
     return passed_stream.getvalue(), rejected_stream.getvalue()
 
 
+def generate_rejected_validation_report(rows, results, headers, profile):
+    normalized_headers = list(headers or [])
+    if not normalized_headers:
+        normalized_headers = ['Column1']
+
+    styles = _build_excel_styles()
+    wb_rejected = openpyxl.Workbook()
+    ws_rejected = wb_rejected.active
+    ws_rejected.title = 'RejectedRecords'
+    ws_rejected.append(normalized_headers + ['Validation Status', 'Error Reason', 'Suggested Fix'])
+
+    for idx, row in enumerate(rows):
+        if idx >= len(results):
+            break
+
+        result = results[idx]
+        if result.get('status') == 'PASS':
+            continue
+
+        errors = result.get('errors', [])
+        error_summary = _build_error_summary(errors)
+        suggested_fix = _build_suggested_fix_summary(errors)
+        row_values = [row.get(h, '') for h in normalized_headers]
+
+        ws_rejected.append(row_values + ['FAIL', error_summary, suggested_fix])
+        rejected_row_number = ws_rejected.max_row
+
+        for err in errors:
+            col_idx = err.get('col')
+            if col_idx is not None and 0 <= col_idx < len(normalized_headers):
+                cell = ws_rejected.cell(row=rejected_row_number, column=col_idx + 1)
+                cell.fill = styles['error_fill']
+                cell.font = styles['error_font']
+                cell.border = styles['error_border']
+                cell.alignment = styles['body_alignment']
+                comment_text = err.get('msg', 'Validation Error')
+                if err.get('expected'):
+                    comment_text += f"\nExpected: {err['expected']}"
+                if err.get('actual'):
+                    comment_text += f"\nActual: {err['actual']}"
+                cell.comment = Comment(comment_text, 'Validator')
+
+    if ws_rejected.max_row > 1:
+        for row in ws_rejected.iter_rows(min_row=2, max_row=ws_rejected.max_row):
+            status_cell = row[len(normalized_headers)]
+            status_cell.fill = styles['status_invalid_fill']
+            status_cell.font = styles['status_invalid_font']
+            status_cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            for cell in row:
+                if cell.value is None:
+                    cell.value = ''
+                if cell.fill == styles['header_fill']:
+                    continue
+                if cell.row == 1:
+                    continue
+                if cell.column > len(normalized_headers):
+                    cell.alignment = styles['body_alignment']
+                elif cell.fill is None or cell.fill == PatternFill():
+                    cell.alignment = styles['body_alignment']
+
+    _apply_sheet_styling(ws_rejected, styles)
+
+    rejected_stream = io.BytesIO()
+    wb_rejected.save(rejected_stream)
+    rejected_stream.seek(0)
+    return rejected_stream.getvalue()
+
+
 def generate_validation_summary_workbook(rows, results, filename_base: str = 'Validation') -> bytes:
     """Generate a summary workbook with banking-style styling."""
     wb_summary = openpyxl.Workbook()
@@ -728,29 +1073,13 @@ def generate_validation_summary_workbook(rows, results, filename_base: str = 'Va
 
     return passed_stream.getvalue(), rejected_stream.getvalue()
 
-@app.route('/')
-def index():
-    return send_from_directory(BASE_DIR, 'index.html')
-
-@app.route('/style.css')
-def serve_css():
-    return send_from_directory(BASE_DIR, 'style.css')
-
-@app.route('/tailwind.generated.css')
-def serve_tailwind_css():
-    return send_from_directory(BASE_DIR, 'tailwind.generated.css')
-
-@app.route('/main.js')
-def serve_js():
-    return send_from_directory(BASE_DIR, 'main.js')
-
-@app.route('/rules.json')
-def serve_rules():
-    return send_from_directory(BASE_DIR, 'rules.json')
-
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "ok"})
+
+@app.route('/api/health', methods=['GET'])
+def api_health():
+    return health()
 
 @app.route('/analyze', methods=['POST'])
 def analyze_endpoint():
@@ -850,20 +1179,22 @@ def validate_endpoint():
     file_name_base = Path(original_filename).stem  # Name without extension
     file_extension = Path(original_filename).suffix or '.xlsx'  # Keep original extension or default to .xlsx
 
-    # Generate the highlighted validation report for all original rows
-    highlighted_report = generate_highlighted_validation_report(rows, results, headers, active_profile)
+    # Generate the passed and rejected validation reports workbooks with error details
+    passed_report, rejected_report = generate_validated_excel_streams(rows, results, headers, active_profile)
     validation_summary = generate_validation_summary_workbook(rows, results, file_name_base)
 
     # Cache the resulting byte streams with original filename
+    passed_count = sum(1 for r in results if r['status'] == 'PASS')
+    rejected_count = sum(1 for r in results if r['status'] == 'FAIL')
     file_id = str(uuid.uuid4())
     VALIDATED_FILES_CACHE[file_id] = {
-        "report": highlighted_report,
-        "highlighted": highlighted_report,
+        "passed_report": passed_report,
+        "rejected_report": rejected_report,
         "summary": validation_summary,
         "filename_base": file_name_base,
         "file_extension": file_extension,
-        "passed_count": sum(1 for r in results if r['status'] == 'PASS'),
-        "rejected_count": sum(1 for r in results if r['status'] == 'FAIL'),
+        "passed_count": passed_count,
+        "rejected_count": rejected_count,
         "total_count": len(rows),
         "full_results": results  # Store full results, not just first 20
     }
@@ -924,16 +1255,14 @@ def download_report(file_id):
         return "File not found or expired", 404
 
     data = VALIDATED_FILES_CACHE[file_id]
-    report_bytes = data.get("report") or data.get("highlighted")
+    report_bytes = data.get("rejected_report")
     if not report_bytes:
         return "Validation report not available", 404
 
-    filename_base = data.get("filename_base") or 'Validation_Report'
-    download_name = f"{filename_base}_Validation_Report.xlsx"
     return send_file(
         io.BytesIO(report_bytes),
         as_attachment=True,
-        download_name=download_name,
+        download_name='rejected_records.xlsx',
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
@@ -943,31 +1272,49 @@ def download_report_api(file_id):
 
 @app.route('/download/passed/<file_id>', methods=['GET'])
 def download_passed(file_id):
-    return download_report(file_id)
+    if file_id not in VALIDATED_FILES_CACHE:
+        return "File not found or expired", 404
+
+    data = VALIDATED_FILES_CACHE[file_id]
+    report_bytes = data.get("passed_report")
+    if not report_bytes:
+        return "Passed records report not available", 404
+
+    return send_file(
+        io.BytesIO(report_bytes),
+        as_attachment=True,
+        download_name='passed_records.xlsx',
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 @app.route('/api/download/passed/<file_id>', methods=['GET'])
 def download_passed_api(file_id):
-    return download_report(file_id)
+    return download_passed(file_id)
 
 @app.route('/download/rejected/<file_id>', methods=['GET'])
 def download_rejected(file_id):
-    return download_report(file_id)
+    if file_id not in VALIDATED_FILES_CACHE:
+        return "File not found or expired", 404
+
+    data = VALIDATED_FILES_CACHE[file_id]
+    report_bytes = data.get("rejected_report")
+    if not report_bytes:
+        return "Rejected records report not available", 404
+
+    return send_file(
+        io.BytesIO(report_bytes),
+        as_attachment=True,
+        download_name='rejected_records.xlsx',
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 @app.route('/api/download/rejected/<file_id>', methods=['GET'])
 def download_rejected_api(file_id):
-    return download_report(file_id)
+    return download_rejected(file_id)
 
 if __name__ == '__main__':
-    try:
-        print('Backend starting')
-        print('Loading rules')
-        load_rules()
-        ensure_runtime_directories()
-        print('Rules loaded')
-        print('Upload directory ready')
-        print('Generated directory ready')
-        print('Server running on: http://127.0.0.1:5001')
-        app.run(host='127.0.0.1', port=5001, debug=True, use_reloader=False)
-    except Exception as exc:
-        print(f"[ERROR] Startup failed: {exc}")
-        raise
+    print('Backend module executed directly. Use a WSGI or serverless runtime to host this app.')
+    ensure_runtime_directories()
+    print('Upload directory ready')
+    print('Generated directory ready')
+    print('Logs directory ready')

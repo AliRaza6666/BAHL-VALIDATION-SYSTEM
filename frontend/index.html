@@ -73,6 +73,9 @@
                 </div>
             </div>
             <div id="status-message" class="mt-4 text-sm hidden" role="status" aria-live="polite"></div>
+    <div class="mt-4 flex justify-center">
+        <button id="retry-health-btn" class="hidden bg-emerald-500 text-white px-4 py-2 rounded-lg hover:bg-emerald-600 transition-all duration-200" type="button">Retry connection</button>
+    </div>
 
             <!-- Actions (Hidden until uploaded) -->
             <div class="mt-8 hidden" id="validate-action-group">
@@ -144,11 +147,13 @@
             <!-- Download Section -->
             <div class="bg-gradient-to-b from-white to-[#EAF5EE] border-2 border-[#0E8348]/30 rounded-2xl p-8 custom-shadow text-center">
                 <h3 class="text-xl font-extrabold text-[#0E8348] mb-1">Validation Complete</h3>
-                <p class="text-sm text-gray-600 mb-6">Download the validation report below. Every invalid cell is highlighted in red and includes an explanation for quick correction.</p>
-                <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6">
-                    <button id="download-report-btn" class="w-full sm:w-auto bg-[#0E8348] hover:bg-[#0A6B3B] text-white font-bold px-6 py-3 rounded-lg shadow-md transition duration-150">Download Validation Report</button>
+                <p class="text-sm text-black mb-6">Download the validation reports below. Passed report contains only fully validated rows; rejected report contains only rows with validation errors.</p>
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-3">
+                    <button id="download-passed-btn" class="w-full sm:w-auto bg-[#006B3F] text-white font-bold px-6 py-3 rounded-lg shadow-md transition duration-150">Download Passed Records</button>
+                    <button id="download-rejected-btn" class="w-full sm:w-auto bg-[#B91C1C]  text-white font-bold px-6 py-3 rounded-lg shadow-md transition duration-150">Download Rejected Records</button>
                 </div>
-                <button id="reset-btn" class="text-[#0E8348] hover:text-[#0A6B3B] font-semibold text-sm transition">Upload New File</button>
+                <p class="text-sm text-gray-600">Passed report contains only fully validated rows. Rejected report contains only rows containing validation errors.</p>
+                <button id="reset-btn" class="mt-6 text-[#0E8348] hover:text-[#0A6B3B] font-semibold text-sm transition">Upload New File</button>
             </div>
         </section>
     </main>

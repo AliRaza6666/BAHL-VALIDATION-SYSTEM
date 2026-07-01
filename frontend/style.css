@@ -250,3 +250,49 @@ td.invalid-cell:hover::before {
     z-index: 50;
     pointer-events: none;
 }
+
+/* Download report buttons: keep labels readable and preserve hover colors */
+#download-passed-btn,
+#download-rejected-btn {
+    color: #ffffff !important;
+    opacity: 1;
+    background-image: none !important;
+    transition: background-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+#download-passed-btn:not(:disabled) {
+    background-color: #006b3f !important;
+}
+
+#download-rejected-btn:not(:disabled) {
+    background-color: #b91c1c !important;
+}
+
+#download-passed-btn:hover,
+#download-rejected-btn:hover {
+    opacity: 0.95;
+    transform: translateY(-1px);
+}
+
+#download-passed-btn:disabled,
+#download-rejected-btn:disabled {
+    color: #ffffff !important;
+    opacity: 0.75;
+    cursor: not-allowed;
+}
+
+#download-passed-btn:disabled {
+    background-color: #0f7a46 !important;
+}
+
+#download-passed-btn:hover:not(:disabled) {
+    background-color: #005233 !important;
+}
+
+#download-rejected-btn:disabled {
+    background-color: #a61b1b !important;
+}
+
+#download-rejected-btn:hover:not(:disabled) {
+    background-color: #991b1b !important;
+}

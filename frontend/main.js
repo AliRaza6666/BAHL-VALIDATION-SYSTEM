@@ -21,6 +21,7 @@ const el = {
     displayRows: document.getElementById('display-rows'),
     validateActionGroup: document.getElementById('validate-action-group'),
     validateBtn: document.getElementById('validate-btn'),
+    healthRetryBtn: document.getElementById('retry-health-btn'),
     
     progressContainer: document.getElementById('progress-container'),
     progressStatusText: document.getElementById('progress-status-text'),
@@ -37,7 +38,8 @@ const el = {
     previewThead: document.getElementById('preview-thead'),
     previewTbody: document.getElementById('preview-tbody'),
     
-    downloadReportBtn: document.getElementById('download-report-btn'),
+    downloadPassedBtn: document.getElementById('download-passed-btn'),
+    downloadRejectedBtn: document.getElementById('download-rejected-btn'),
     resetBtn: document.getElementById('reset-btn')
 };
 
@@ -52,6 +54,74 @@ function setStatus(message, isError = false) {
     el.statusMessage.textContent = message;
     el.statusMessage.className = `mt-4 text-sm rounded-lg border px-3 py-2 ${isError ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`;
 }
+
+function setAppEnabled(enabled) {
+    if (enabled) {
+        el.dropZone.classList.remove('opacity-50', 'pointer-events-none');
+        el.browseBtn.disabled = false;
+        el.fileInput.disabled = false;
+        el.healthRetryBtn.classList.add('hidden');
+    } else {
+        el.dropZone.classList.add('opacity-50', 'pointer-events-none');
+        el.browseBtn.disabled = true;
+        el.fileInput.disabled = true;
+    }
+}
+
+function getServiceErrorMessage(error) {
+    if (!error || typeof error.message !== 'string') {
+        return 'Service temporarily unavailable. Retry upload.';
+    }
+
+    const message = error.message;
+    if (message.includes('NetworkError') || message.includes('failed to fetch') || message.includes('Service temporarily unavailable') || message.includes('Validation failed')) {
+        return 'Service temporarily unavailable. Retry upload.';
+    }
+
+    return message;
+}
+
+async function checkHealth() {
+    setStatus('Checking service status...', false);
+    setAppEnabled(false);
+
+    try {
+        const response = await fetch(buildApiUrl('/health'), {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error('Service temporarily unavailable. Retry upload.');
+        }
+
+        const data = await response.json();
+        if (data.status !== 'ok') {
+            throw new Error('Service temporarily unavailable. Retry upload.');
+        }
+
+        setStatus('Service available. Upload is enabled.', false);
+        setAppEnabled(true);
+        return true;
+    } catch (error) {
+        setStatus(getServiceErrorMessage(error), true);
+        setAppEnabled(false);
+        el.healthRetryBtn.classList.remove('hidden');
+        console.error('[HEALTH] Service check failed', error);
+        return false;
+    }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    checkHealth();
+    setDownloadButtonsState(false);
+    el.healthRetryBtn.classList.add('hidden');
+    el.healthRetryBtn.addEventListener('click', async () => {
+        await checkHealth();
+    });
+});
 
 // Reset all validation state when new file is selected
 function resetValidationState() {
@@ -73,8 +143,7 @@ function resetValidationState() {
     
     // Reset state variables
     currentFileId = null;
-    el.downloadReportBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-    el.downloadReportBtn.disabled = true;
+    setDownloadButtonsState(false);
     
     // Reset profile selection
     el.profileSelect.value = 'auto';
@@ -127,7 +196,7 @@ async function handleFileSelection(file) {
     }
 
     console.log('[UPLOAD] Uploading file...', file.name, file.type || 'unknown');
-    console.log('Uploading to:', `${API_URL}/analyze`);
+    console.log('Uploading to:', buildApiUrl('/analyze'));
     setStatus('Uploading...', false);
     
     selectedFile = file;
@@ -141,20 +210,20 @@ async function handleFileSelection(file) {
     formData.append('file', file);
     
     try {
-        const response = await fetch(`${API_URL}/analyze`, {
+        const response = await fetch(buildApiUrl('/analyze'), {
             method: 'POST',
             body: formData
         });
         console.log('Status:', response.status);
         
         if (!response.ok) {
-            let err = { message: 'Backend not running' };
+            let err = { message: 'Service temporarily unavailable. Retry upload.' };
             try {
                 err = await response.json();
             } catch {
                 // ignore invalid JSON and keep the fallback message
             }
-            throw new Error(response.status === 404 ? 'Backend not running' : (err.message || err.error || 'Upload failed'));
+            throw new Error(err.message || err.error || 'Service temporarily unavailable. Retry upload.');
         }
         
         const data = await response.json();
@@ -172,7 +241,7 @@ async function handleFileSelection(file) {
         console.log('[UPLOAD] Ready for validation');
         el.validateActionGroup.classList.remove('hidden');
     } catch (e) {
-        const message = e instanceof TypeError && e.message.includes('fetch') ? 'Backend not running' : (e.message || 'Upload failed');
+        const message = getServiceErrorMessage(e);
         setStatus(message, true);
         console.error('[UPLOAD] Upload failed', e);
         el.fileDetails.classList.add('hidden');
@@ -203,7 +272,7 @@ el.validateBtn.addEventListener('click', async () => {
     formData.append('profile', selectedProfile);
     setStatus('Validation started...', false);
     console.log('[VALIDATION] Validation started');
-    console.log('Uploading to:', `${API_URL}/validate`);
+    console.log('Uploading to:', buildApiUrl('/validate'));
     
     // Simulate steps in UI
     const steps = ['read', 'headers', 'rows', 'duplicates', 'export'];
@@ -244,7 +313,7 @@ el.validateBtn.addEventListener('click', async () => {
     setStep('read', 20, 'Reading File...');
     
     try {
-        const response = await fetch(`${API_URL}/validate`, {
+        const response = await fetch(buildApiUrl('/validate'), {
             method: 'POST',
             body: formData,
             signal: validationAbortController.signal
@@ -254,13 +323,13 @@ el.validateBtn.addEventListener('click', async () => {
         clearInterval(stepInterval);
         
         if (!response.ok) {
-            let err = { message: 'Backend not running' };
+            let err = { message: 'Service temporarily unavailable. Retry upload.' };
             try {
                 err = await response.json();
             } catch {
                 // ignore invalid JSON and keep the fallback message
             }
-            throw new Error(response.status === 404 ? 'Backend not running' : (err.message || err.error || 'Validation failed'));
+            throw new Error(err.message || err.error || 'Service temporarily unavailable. Retry upload.');
         }
         
         const data = await response.json();
@@ -289,7 +358,7 @@ el.validateBtn.addEventListener('click', async () => {
             return;
         }
         
-        const message = e instanceof TypeError && e.message.includes('fetch') ? 'Backend not running' : (e.message || 'Validation failed');
+        const message = getServiceErrorMessage(e);
         setStatus(message, true);
         console.error('[VALIDATION] Validation failed', e);
         el.progressContainer.classList.add('hidden');
@@ -329,13 +398,8 @@ function renderDashboard(data) {
         el.errorBreakdownList.appendChild(li);
     }
     
-    // Enable/disable the single report download button
-    el.downloadReportBtn.disabled = !currentFileId;
-    if (!currentFileId) {
-        el.downloadReportBtn.classList.add('opacity-50', 'cursor-not-allowed');
-    } else {
-        el.downloadReportBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-    }
+    // Enable/disable the report download buttons
+    setDownloadButtonsState(!!currentFileId);
 
     renderPreviewTable(data);
     
@@ -389,10 +453,37 @@ function renderPreviewTable(data) {
     });
 }
 
+function setDownloadButtonsState(enabled) {
+    [el.downloadPassedBtn, el.downloadRejectedBtn].forEach((button) => {
+        if (enabled) {
+            button.disabled = false;
+            button.classList.remove('opacity-50', 'cursor-not-allowed', 'bg-gray-200', 'text-gray-500', 'text-slate-700', 'border-gray-300');
+            button.classList.add('text-white', 'shadow-md', 'rounded-lg', 'font-bold');
+            if (button.id === 'download-passed-btn') {
+                button.classList.add('bg-[#006B3F]', 'hover:bg-[#005233]');
+                button.classList.remove('bg-[#16A34A]', 'hover:bg-[#15803D]');
+            } else {
+                button.classList.add('bg-[#B91C1C]', 'hover:bg-[#991B1B]');
+                button.classList.remove('bg-[#C62828]', 'hover:bg-[#A61B1B]');
+            }
+        } else {
+            button.disabled = true;
+            button.classList.remove('bg-[#006B3F]', 'hover:bg-[#005233]', 'bg-[#B91C1C]', 'hover:bg-[#991B1B]', 'text-white');
+            button.classList.add('opacity-70', 'cursor-not-allowed', 'bg-gray-100', 'text-slate-700', 'border', 'border-gray-300');
+        }
+    });
+}
+
 // --- Download File Handlers ---
-el.downloadReportBtn.addEventListener('click', () => {
+el.downloadPassedBtn.addEventListener('click', () => {
     if (currentFileId) {
-        window.location.href = buildApiUrl(`/api/download/report/${currentFileId}`);
+        window.location.href = buildApiUrl(`/api/download/passed/${currentFileId}`);
+    }
+});
+
+el.downloadRejectedBtn.addEventListener('click', () => {
+    if (currentFileId) {
+        window.location.href = buildApiUrl(`/api/download/rejected/${currentFileId}`);
     }
 });
 
