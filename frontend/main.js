@@ -93,17 +93,24 @@ async function checkHealth() {
         const timeoutId = setTimeout(() => controller.abort(), 5000);
 
         try {
+            console.log("Health URL:", healthUrl);
+
             const response = await fetch(healthUrl, {
                 method: 'GET',
                 cache: 'no-store',
                 signal: controller.signal
             });
 
+            console.log("Response status:", response.status);
+            console.log("Response ok:", response.ok);
+
+            const data = await response.json();
+            console.log("Response data:", data);
+
             if (!response.ok) {
                 throw new Error('Service temporarily unavailable. Retry upload.');
             }
 
-            const data = await response.json();
             if (data.status !== 'ok') {
                 throw new Error('Service temporarily unavailable. Retry upload.');
             }
@@ -112,8 +119,11 @@ async function checkHealth() {
             setStatus('Service available. Upload is enabled.', false);
             setAppEnabled(true);
             return true;
+
         } catch (error) {
             clearTimeout(timeoutId);
+
+            console.error("[HEALTH] Error object:", error);
 
             if (attempt < maxAttempts) {
                 await new Promise((resolve) => setTimeout(resolve, 500));
