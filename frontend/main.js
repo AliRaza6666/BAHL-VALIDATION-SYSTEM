@@ -3,10 +3,10 @@ let selectedFile = null;
 let currentFileId = null;
 let validationAbortController = null;
 const rawApiUrl = import.meta.env.VITE_API_URL;
-if (!rawApiUrl) {
-    throw new Error('VITE_API_URL must be set in the environment.');
-}
-const API_URL = rawApiUrl.replace(/\/+$|\s+/g, '');
+const normalizedApiUrl = typeof rawApiUrl === 'string' ? rawApiUrl.trim() : '';
+const API_URL = !normalizedApiUrl || normalizedApiUrl.includes('your-backend.vercel.app')
+    ? '/api'
+    : normalizedApiUrl.replace(/\/+$/, '');
 const buildApiUrl = (path) => `${API_URL}${path.startsWith('/') ? path : `/${path}`}`;
 
 // DOM Elements
@@ -85,37 +85,56 @@ async function checkHealth() {
     setStatus('Checking service status...', false);
     setAppEnabled(false);
 
-    try {
-        const response = await fetch(buildApiUrl('/health'), {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json'
+    const healthUrl = buildApiUrl('/health');
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        try {
+            const response = await fetch(healthUrl, {
+                method: 'GET',
+                cache: 'no-store',
+                signal: controller.signal
+            });
+
+            if (!response.ok) {
+                throw new Error('Service temporarily unavailable. Retry upload.');
             }
-        });
 
-        if (!response.ok) {
-            throw new Error('Service temporarily unavailable. Retry upload.');
+            const data = await response.json();
+            if (data.status !== 'ok') {
+                throw new Error('Service temporarily unavailable. Retry upload.');
+            }
+
+            clearTimeout(timeoutId);
+            setStatus('Service available. Upload is enabled.', false);
+            setAppEnabled(true);
+            return true;
+        } catch (error) {
+            clearTimeout(timeoutId);
+
+            if (attempt < maxAttempts) {
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                continue;
+            }
+
+            setStatus(getServiceErrorMessage(error), true);
+            setAppEnabled(false);
+            el.healthRetryBtn.classList.remove('hidden');
+            console.error('[HEALTH] Service check failed', error);
+            return false;
         }
-
-        const data = await response.json();
-        if (data.status !== 'ok') {
-            throw new Error('Service temporarily unavailable. Retry upload.');
-        }
-
-        setStatus('Service available. Upload is enabled.', false);
-        setAppEnabled(true);
-        return true;
-    } catch (error) {
-        setStatus(getServiceErrorMessage(error), true);
-        setAppEnabled(false);
-        el.healthRetryBtn.classList.remove('hidden');
-        console.error('[HEALTH] Service check failed', error);
-        return false;
     }
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-    checkHealth();
+    checkHealth().then((ok) => {
+        if (!ok) {
+            setStatus('Service temporarily unavailable. Retry upload.', true);
+        }
+    });
     setDownloadButtonsState(false);
     el.healthRetryBtn.classList.add('hidden');
     el.healthRetryBtn.addEventListener('click', async () => {
