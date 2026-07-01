@@ -55,9 +55,6 @@ def ensure_runtime_directories() -> None:
     for directory in (UPLOAD_DIR, GENERATED_DIR, LOG_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
-
-ensure_runtime_directories()
-
 @app.errorhandler(Exception)
 def handle_unexpected_error(error: Exception):
     if isinstance(error, HTTPException):
