@@ -506,13 +506,13 @@ function setDownloadButtonsState(enabled) {
 // --- Download File Handlers ---
 el.downloadPassedBtn.addEventListener('click', () => {
     if (currentFileId) {
-        window.location.href = buildApiUrl(`/api/download/passed/${currentFileId}`);
+        window.location.href = buildApiUrl(`/download/passed/${currentFileId}`);
     }
 });
 
 el.downloadRejectedBtn.addEventListener('click', () => {
     if (currentFileId) {
-        window.location.href = buildApiUrl(`/api/download/rejected/${currentFileId}`);
+        window.location.href = buildApiUrl(`/download/rejected/${currentFileId}`);
     }
 });
 
