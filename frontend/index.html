@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BAHL Validation System |Developed By Sadiq Ali</title>
+    <meta name="description" content="A lightweight local tool for professional Excel validation. Validate IBAN, CNIC, and business data with immediate visual feedback.">
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/tailwind.generated.css">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans min-h-screen flex flex-col">
+    <!-- Header / Navigation Bar -->
+    <header class="bahl-navbar sticky top-0 z-50">
+        <div class="max-w-5xl mx-auto px-6 py-5 flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <div class="bahl-navbar-icon">
+                    <span>🏦</span>
+                </div>
+                <div class="flex flex-col">
+                    <span class="bahl-navbar-title">BAHL Validation System</span>
+                    <span class="bahl-navbar-subtitle">Developed by Sadiq Ali</span>
+                </div>
+            </div>
+            <div>
+                <span class="bahl-navbar-status">
+                    <span class="w-2.5 h-2.5 bg-white rounded-full animate-pulse"></span> System Online
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="max-w-5xl mx-auto px-6 py-8 w-full flex-1">
+        <!-- Hero Upload Card -->
+        <section id="upload-card" class="bg-white border border-gray-200 rounded-2xl p-8 custom-shadow text-center transition-all duration-300">
+            <!-- Profile Selection -->
+            <div class="mb-6 max-w-xs mx-auto text-left">
+                <label for="profile-select" class="block text-sm font-semibold text-gray-700 mb-2">Validation Profile</label>
+                <select id="profile-select" class="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500">
+                    <option value="auto">Auto-Detect Profile</option>
+                    <option value="raast">Profile A: Raast File Format</option>
+                    <option value="web_based">Profile B: Web-Based File Format</option>
+                    <option value="1link">Profile C: 1Link File Format</option>
+                </select>
+            </div>
+
+            <!-- Drop Zone -->
+            <div id="drop-zone" class="border-2 border-dashed border-gray-300 rounded-xl py-12 px-6 cursor-pointer hover:border-emerald-500 hover:bg-emerald-50/30 transition-all duration-200">
+                <span class="text-4xl mb-4 block">📄</span>
+                <h3 class="text-lg font-bold mb-1">Upload Excel File</h3>
+                <p class="text-sm text-gray-500 mb-6">Supported: .xlsx, .xls</p>
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-3 text-sm font-medium text-gray-500">
+                    <span class="text-gray-400">[ Drag & Drop ]</span>
+                    <span class="text-gray-300">OR</span>
+                    <button class="bg-white border border-gray-300 px-4 py-2 rounded-lg hover:border-emerald-500 hover:text-emerald-600 transition-all duration-200" id="browse-btn">[ Choose File ]</button>
+                </div>
+                <input type="file" id="file-input" accept=".xlsx, .xls" hidden>
+            </div>
+
+            <!-- File Details (Hidden until uploaded) -->
+            <div id="file-details" class="mt-6 bg-gray-50 border border-gray-200 rounded-xl p-4 inline-flex flex-col gap-3 min-w-[320px] text-left hidden">
+                <div class="flex justify-between text-sm border-b border-gray-200 pb-2">
+                    <span class="text-gray-500 font-medium">File Name:</span>
+                    <span id="display-filename" class="font-semibold text-gray-900">-</span>
+                </div>
+                <div class="flex justify-between text-sm">
+                    <span class="text-gray-500 font-medium">Rows Detected:</span>
+                    <span id="display-rows" class="font-semibold text-gray-900">-</span>
+                </div>
+            </div>
+            <div id="status-message" class="mt-4 text-sm hidden" role="status" aria-live="polite"></div>
+
+            <!-- Actions (Hidden until uploaded) -->
+            <div class="mt-8 hidden" id="validate-action-group">
+                <button id="validate-btn" class="bg-emerald-500 text-white font-bold px-8 py-3.5 rounded-xl text-lg hover:bg-emerald-600 active:scale-[0.98] transition-all duration-200 shadow-lg shadow-emerald-500/20">Validate Excel</button>
+            </div>
+        </section>
+
+        <!-- Progress Section -->
+        <section id="progress-container" class="bg-white border border-gray-200 rounded-2xl p-8 custom-shadow text-center mt-6 hidden">
+            <div class="font-semibold text-lg text-gray-900 mb-6" id="progress-status-text">Ready to validate...</div>
+            <div class="flex flex-wrap justify-between gap-2 text-xs font-semibold text-gray-400 mb-4 max-w-xl mx-auto">
+                <span class="step px-2.5 py-1 rounded-md" data-step="read">Reading File</span>
+                <span class="step px-2.5 py-1 rounded-md" data-step="headers">Checking Headers</span>
+                <span class="step px-2.5 py-1 rounded-md" data-step="rows">Validating Rows</span>
+                <span class="step px-2.5 py-1 rounded-md" data-step="duplicates">Checking Duplicates</span>
+                <span class="step px-2.5 py-1 rounded-md" data-step="export">Generating Excel</span>
+            </div>
+            <div class="h-2.5 w-full bg-gray-200 rounded-full overflow-hidden mb-3">
+                <div id="progress-bar" class="h-full bg-emerald-500 w-0 transition-all duration-300 ease-out"></div>
+            </div>
+            <div class="text-sm font-bold text-emerald-600" id="progress-percent">0%</div>
+        </section>
+
+        <!-- Result Dashboard (Hidden until validated) -->
+        <section id="result-dashboard" class="mt-8 space-y-6 hidden">
+            <!-- Summary Stats -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="bg-white p-6 rounded-xl border border-gray-200 custom-shadow flex flex-col">
+                    <span class="text-xs font-semibold text-gray-400 uppercase mb-2">Total Rows</span>
+                    <span id="res-total" class="text-2xl font-bold text-gray-900">-</span>
+                </div>
+                <div class="bg-white p-6 rounded-xl border border-gray-200 custom-shadow flex flex-col">
+                    <span class="text-xs font-semibold text-gray-400 uppercase mb-2">Passed Rows</span>
+                    <span id="res-passed" class="text-2xl font-bold text-emerald-600">-</span>
+                </div>
+                <div class="bg-white p-6 rounded-xl border border-gray-200 custom-shadow flex flex-col">
+                    <span class="text-xs font-semibold text-gray-400 uppercase mb-2">Rejected Rows</span>
+                    <span id="res-failed" class="text-2xl font-bold text-red-600">-</span>
+                </div>
+                <div class="bg-white p-6 rounded-xl border border-gray-200 custom-shadow flex flex-col">
+                    <span class="text-xs font-semibold text-gray-400 uppercase mb-2">Processing Time</span>
+                    <span id="res-time" class="text-2xl font-bold text-gray-700">-</span>
+                </div>
+            </div>
+
+            <!-- Error Summary List -->
+            <div class="bg-white p-6 rounded-xl border border-gray-200 custom-shadow">
+                <h4 class="font-bold text-gray-900 mb-4 text-sm uppercase tracking-wider">Error Summary</h4>
+                <ul class="flex flex-wrap gap-2 text-xs font-semibold text-gray-700" id="error-breakdown-list">
+                    <!-- Items like ❌ Invalid IBAN -> 120 -->
+                </ul>
+            </div>
+
+            <!-- Preview Section -->
+            <div class="bg-white p-6 rounded-xl border border-gray-200 custom-shadow">
+                <h4 class="font-bold text-gray-900 mb-4 text-sm uppercase tracking-wider">Excel Preview (First 20 Rows)</h4>
+                <div class="excel-table-wrapper rounded-lg border border-gray-200">
+                    <table class="excel-table w-full text-left text-xs border-collapse">
+                        <thead id="preview-thead" class="excel-table-header bg-gray-50 text-gray-500 font-semibold uppercase tracking-wider border-b border-gray-200">
+                            <!-- Headers -->
+                        </thead>
+                        <tbody id="preview-tbody" class="divide-y divide-gray-100">
+                            <!-- Rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Download Section -->
+            <div class="bg-gradient-to-b from-white to-emerald-50/10 border-2 border-emerald-500/30 rounded-2xl p-8 custom-shadow text-center">
+                <h3 class="text-xl font-extrabold mb-1">Validation Complete</h3>
+                <p class="text-sm text-gray-500 mb-6">Download your records below. Rejected records highlight only the invalid cells in red with details.</p>
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6">
+                    <button id="download-passed-btn" class="w-full sm:w-auto bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-6 py-3 rounded-lg shadow-md transition duration-150">Download Passed Records</button>
+                    <button id="download-rejected-btn" class="w-full sm:w-auto bg-red-600 hover:bg-red-700 text-white font-bold px-6 py-3 rounded-lg shadow-md transition duration-150">Download Rejected Records</button>
+                </div>
+                <button id="reset-btn" class="text-gray-500 hover:text-gray-900 font-semibold text-sm transition">Upload New File</button>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t border-gray-200 py-6 text-center text-xs text-gray-500 font-medium">
+        <p>BAHL File Validator (Local Version) &copy; 2026. Data remains strictly in-memory.</p>
+    </footer>
+
+    <!-- JS Logic module -->
+    <script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "backup",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "build:css": "npx @tailwindcss/cli -i ./tailwind.css -o ./tailwind.generated.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.2",
+    "tailwindcss": "^4.3.2",
+    "vite": "^8.1.0"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "file-saver": "^2.0.5",
+    "xlsx": "^0.18.5"
+  }
+}
