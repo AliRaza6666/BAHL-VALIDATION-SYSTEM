@@ -21,7 +21,11 @@ app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
 
 CORS(
     app,
-    resources={r"/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}},
+    resources={r"/*": {"origins": [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://bahl-excel-validator.vercel.app"
+    ]}},
     supports_credentials=True,
     allow_headers=["Content-Type", "Authorization"],
     methods=["GET", "POST", "OPTIONS"],

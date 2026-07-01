@@ -2,7 +2,11 @@
 let selectedFile = null;
 let currentFileId = null;
 let validationAbortController = null;
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5001';
+const rawApiUrl = import.meta.env.VITE_API_URL;
+if (!rawApiUrl) {
+    throw new Error('VITE_API_URL must be set in the environment.');
+}
+const API_URL = rawApiUrl.replace(/\/+$|\s+/g, '');
 const buildApiUrl = (path) => `${API_URL}${path.startsWith('/') ? path : `/${path}`}`;
 
 // DOM Elements
