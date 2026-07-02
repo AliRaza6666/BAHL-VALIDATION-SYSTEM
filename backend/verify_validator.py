@@ -23,7 +23,11 @@ def assert_text_preserved(values):
         loaded_value = ws2.cell(row=1, column=idx).value
         assert loaded_value == value, f'Expected {value!r} to be preserved, got {loaded_value!r}'
         assert not isinstance(loaded_value, float), f'Expected string for {value!r}, got float'
-    (ROOT / 'tmp_text_format_check.xlsx').unlink(missing_ok=True)
+    try:
+        (ROOT / 'tmp_text_format_check.xlsx').unlink(missing_ok=True)
+    except Exception:
+        # On Windows the file may be locked by another process; ignore cleanup errors
+        pass
 
 
 def run_verification():

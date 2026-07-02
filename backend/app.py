@@ -492,12 +492,12 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
         mobile_val_raw = row.get(mobile_field, '')
         mobile_val = mobile_val_raw.strip() if isinstance(mobile_val_raw, str) else _to_cell_text(mobile_val_raw)
         if mobile_val:
-            if not re.fullmatch(r'\+?\d{10,15}', mobile_val):
+            if not re.fullmatch(r'03\d{9}', mobile_val):
                 errors.append({
                     'col': header_map.get(mobile_field),
                     'field': mobile_field,
-                    'msg': 'Mobile number must be 11 digits',
-                    'expected': 'Telecom format (11 digits)',
+                    'msg': 'Mobile number must be 11 digits starting with 03',
+                    'expected': 'Telecom format (03XXXXXXXXX)',
                     'actual': mobile_val
                 })
 
@@ -575,23 +575,53 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
             # 5. IBAN / Account Number rule
             iban_field = 'BeneficiaryIBAN'
             if iban:
-                if iban.startswith('PK'):
-                    if len(iban) != 24 or not iban.isalnum() or not iban.isupper():
+                if not re.fullmatch(r'PK[A-Z0-9]{22}', iban):
+                    errors.append({
+                        'col': header_map.get(iban_field),
+                        'field': iban_field,
+                        'msg': 'IBAN must be uppercase and 24 characters long',
+                        'expected': '24-char uppercase IBAN',
+                        'actual': iban
+                    })
+            else:
+                errors.append({
+                    'col': header_map.get(iban_field),
+                    'field': iban_field,
+                    'msg': 'Account Number is required',
+                    'expected': 'Non-empty Account Number',
+                    'actual': '(Empty)'
+                })
+
+        # 5b. For web_based and 1link profiles, validate account number kind and format
+        account_field = None
+        if profile == 'web_based':
+            account_field = 'BeneficiaryAccountNo'
+        elif profile == '1link':
+            account_field = 'BeneficiaryAccountNumber'
+
+        if account_field:
+            acc_raw = row.get(account_field, '')
+            acc = acc_raw.strip() if isinstance(acc_raw, str) else _to_cell_text(acc_raw)
+            if acc:
+                # If it looks like an IBAN (starts with PK), validate IBAN rules
+                if acc.upper().startswith('PK'):
+                    if not re.fullmatch(r'PK[A-Z0-9]{22}', acc):
                         errors.append({
-                            'col': header_map.get(iban_field),
-                            'field': iban_field,
-                            'msg': 'IBAN invalid length or format',
+                            'col': header_map.get(account_field),
+                            'field': account_field,
+                            'msg': 'IBAN must be uppercase and 24 characters long',
                             'expected': '24-char uppercase IBAN',
-                            'actual': iban
+                            'actual': acc
                         })
                 else:
-                    if iban == '':
+                    # Non-IBAN account numbers should be numeric and free of spaces or invalid characters
+                    if not re.fullmatch(r'\d+', acc):
                         errors.append({
-                            'col': header_map.get(iban_field),
-                            'field': iban_field,
-                            'msg': 'Account Number is required',
-                            'expected': 'Non-empty Account Number',
-                            'actual': '(Empty)'
+                            'col': header_map.get(account_field),
+                            'field': account_field,
+                            'msg': 'Account number must contain only digits and no spaces or invalid characters',
+                            'expected': 'Numeric account number',
+                            'actual': acc
                         })
 
         # 6. Duplicate Checks
@@ -689,9 +719,9 @@ def _humanize_error(error: Dict[str, Any]) -> str:
     normalized = msg.lower()
 
     if 'mobile' in normalized or 'beneficiarynumber' in field or 'beneficiarymobile' in field:
-        return 'Mobile number format invalid'
+        return msg if msg.endswith('.') else msg + '.'
     if 'iban' in normalized or 'beneficiaryiban' in field:
-        return 'IBAN must contain exactly 24 characters'
+        return msg if msg.endswith('.') else msg + '.'
     if 'cnic' in normalized or 'beneficiaryidentificationno' in field:
         if 'required' in normalized or 'missing' in normalized:
             return 'CNIC required'
@@ -764,21 +794,26 @@ def generate_full_validation_report(rows, results, headers, profile):
         current_row = idx + 2
 
         if result.get('errors'):
+            field_error_comments = {}
             for error in result['errors']:
                 field_name = error.get('field', '')
                 col_idx = next((i for i, h in enumerate(normalized_headers) if h == field_name), None)
-                if col_idx is not None:
-                    cell = ws.cell(row=current_row, column=col_idx + 1)
-                    cell.fill = styles['error_fill']
-                    cell.font = styles['error_font']
-                    cell.border = styles['error_border']
-                    cell.alignment = styles['body_alignment']
-                    comment_text = error.get('msg', 'Validation Error')
-                    if error.get('expected'):
-                        comment_text += f"\nExpected: {error['expected']}"
-                    if error.get('actual'):
-                        comment_text += f"\nActual: {error['actual']}"
-                    cell.comment = Comment(comment_text, 'Validator')
+                if col_idx is None:
+                    continue
+                comment_text = error.get('msg', 'Validation Error')
+                if error.get('expected'):
+                    comment_text += f"\nExpected: {error['expected']}"
+                if error.get('actual'):
+                    comment_text += f"\nActual: {error['actual']}"
+                field_error_comments.setdefault(col_idx, []).append(comment_text)
+
+            for col_idx, comments in field_error_comments.items():
+                cell = ws.cell(row=current_row, column=col_idx + 1)
+                cell.fill = styles['error_fill']
+                cell.font = styles['error_font']
+                cell.border = styles['error_border']
+                cell.alignment = styles['body_alignment']
+                cell.comment = Comment('\n\n'.join(comments), 'Validator')
 
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         status_cell = row[len(normalized_headers)]
@@ -831,23 +866,26 @@ def generate_highlighted_validation_report(rows, results, headers, profile):
         
         # Highlight error cells and add comments
         if result['errors']:
+            field_error_comments = {}
             for error in result['errors']:
                 field_name = error.get('field', '')
                 col_idx = field_to_col.get(field_name)
-                
-                if col_idx:
-                    cell = ws_report.cell(row=current_row, column=col_idx)
-                    cell.fill = styles['error_fill']
-                    cell.font = styles['error_font']
-                    cell.border = styles['error_border']
-                    cell.alignment = styles['body_alignment']
-                    # Add comment with error message
-                    error_msg = error.get('msg', 'Validation Error')
-                    if error.get('expected'):
-                        error_msg += f"\nExpected: {error['expected']}"
-                    if error.get('actual'):
-                        error_msg += f"\nActual: {error['actual']}"
-                    cell.comment = Comment(error_msg, 'Validator')
+                if not col_idx:
+                    continue
+                error_msg = error.get('msg', 'Validation Error')
+                if error.get('expected'):
+                    error_msg += f"\nExpected: {error['expected']}"
+                if error.get('actual'):
+                    error_msg += f"\nActual: {error['actual']}"
+                field_error_comments.setdefault(col_idx, []).append(error_msg)
+
+            for col_idx, comments in field_error_comments.items():
+                cell = ws_report.cell(row=current_row, column=col_idx)
+                cell.fill = styles['error_fill']
+                cell.font = styles['error_font']
+                cell.border = styles['error_border']
+                cell.alignment = styles['body_alignment']
+                cell.comment = Comment('\n\n'.join(comments), 'Validator')
     
     _apply_sheet_styling(ws_report, styles)
     
@@ -898,16 +936,21 @@ def generate_validated_excel_streams(rows, results, headers, profile):
             ws_rejected.append(row_values + ['FAIL', error_summary, suggested_fix])
             rejected_row_number = ws_rejected.max_row
 
+            field_error_comments = {}
             for err in errors:
                 col_idx = err.get('col')
-                if col_idx is not None and col_idx < len(normalized_headers):
-                    cell = ws_rejected.cell(row=rejected_row_number, column=col_idx + 1)
-                    cell.fill = styles['error_fill']
-                    cell.font = styles['error_font']
-                    cell.border = styles['error_border']
-                    cell.alignment = styles['body_alignment']
-                    comment_text = f"{_humanize_error(err)}\nExpected: {err.get('expected', 'See rule')}\nActual: {err.get('actual', 'Invalid value')}"
-                    cell.comment = Comment(comment_text, 'Validator')
+                if col_idx is None or col_idx >= len(normalized_headers):
+                    continue
+                comment_text = f"{_humanize_error(err)}\nExpected: {err.get('expected', 'See rule')}\nActual: {err.get('actual', 'Invalid value')}"
+                field_error_comments.setdefault(col_idx, []).append(comment_text)
+
+            for col_idx, comments in field_error_comments.items():
+                cell = ws_rejected.cell(row=rejected_row_number, column=col_idx + 1)
+                cell.fill = styles['error_fill']
+                cell.font = styles['error_font']
+                cell.border = styles['error_border']
+                cell.alignment = styles['body_alignment']
+                cell.comment = Comment('\n\n'.join(comments), 'Validator')
 
     # Style passed sheet status column
     for row in ws_passed.iter_rows(min_row=2, max_row=ws_passed.max_row):
@@ -978,20 +1021,25 @@ def generate_rejected_validation_report(rows, results, headers, profile):
         ws_rejected.append(row_values + ['FAIL', error_summary, suggested_fix])
         rejected_row_number = ws_rejected.max_row
 
+        field_error_comments = {}
         for err in errors:
             col_idx = err.get('col')
-            if col_idx is not None and 0 <= col_idx < len(normalized_headers):
-                cell = ws_rejected.cell(row=rejected_row_number, column=col_idx + 1)
-                cell.fill = styles['error_fill']
-                cell.font = styles['error_font']
-                cell.border = styles['error_border']
-                cell.alignment = styles['body_alignment']
-                comment_text = err.get('msg', 'Validation Error')
-                if err.get('expected'):
-                    comment_text += f"\nExpected: {err['expected']}"
-                if err.get('actual'):
-                    comment_text += f"\nActual: {err['actual']}"
-                cell.comment = Comment(comment_text, 'Validator')
+            if col_idx is None or col_idx < 0 or col_idx >= len(normalized_headers):
+                continue
+            comment_text = err.get('msg', 'Validation Error')
+            if err.get('expected'):
+                comment_text += f"\nExpected: {err['expected']}"
+            if err.get('actual'):
+                comment_text += f"\nActual: {err['actual']}"
+            field_error_comments.setdefault(col_idx, []).append(comment_text)
+
+        for col_idx, comments in field_error_comments.items():
+            cell = ws_rejected.cell(row=rejected_row_number, column=col_idx + 1)
+            cell.fill = styles['error_fill']
+            cell.font = styles['error_font']
+            cell.border = styles['error_border']
+            cell.alignment = styles['body_alignment']
+            cell.comment = Comment('\n\n'.join(comments), 'Validator')
 
     if ws_rejected.max_row > 1:
         for row in ws_rejected.iter_rows(min_row=2, max_row=ws_rejected.max_row):

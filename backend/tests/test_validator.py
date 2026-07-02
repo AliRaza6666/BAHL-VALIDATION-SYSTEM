@@ -369,6 +369,50 @@ def test_web_profile_bypasses_identity_and_enforces_mandatory_fields():
     assert any(err['field'] == 'Amount' for err in results[1]['errors'])
 
 
+def test_web_profile_rejects_incomplete_mobile_number():
+    rules = load_rules()
+    rows = [
+        {
+            'Amount': '100.50',
+            'BeneficiaryBankCode': '001',
+            'BeneficiaryAccountNo': '000123456',
+            'BeneficiaryName': 'Ali Khan',
+            'BeneficiaryCode': 'B1',
+            'ReferenceField1': 'R1',
+            'ReferenceField2': 'R2',
+            'BeneficiaryEmail': 'ali@example.com',
+            'BeneficiaryMobile': '0345',
+        },
+    ]
+
+    results = validate_rows(rows, 'web_based', rules)
+
+    assert results[0]['status'] == 'FAIL'
+    assert any(err['field'] == 'BeneficiaryMobile' and 'Mobile number must be 11 digits starting with 03' in err['msg'] for err in results[0]['errors'])
+
+
+def test_web_profile_enforces_uppercase_iban_for_account_no():
+    rules = load_rules()
+    rows = [
+        {
+            'Amount': '100.50',
+            'BeneficiaryBankCode': '001',
+            'BeneficiaryAccountNo': 'pk36scbl0000001123456702',
+            'BeneficiaryName': 'Ali Khan',
+            'BeneficiaryCode': 'B1',
+            'ReferenceField1': 'R1',
+            'ReferenceField2': 'R2',
+            'BeneficiaryEmail': 'ali@example.com',
+            'BeneficiaryMobile': '03112753114',
+        },
+    ]
+
+    results = validate_rows(rows, 'web_based', rules)
+
+    assert results[0]['status'] == 'FAIL'
+    assert any(err['field'] == 'BeneficiaryAccountNo' and 'IBAN must be uppercase and 24 characters long' in err['msg'] for err in results[0]['errors'])
+
+
 def test_1link_profile_maps_mobile_and_account_fields():
     rules = load_rules()
     rows = [
