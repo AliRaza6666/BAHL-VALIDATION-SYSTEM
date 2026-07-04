@@ -1,3 +1,6 @@
+const visibleEye = new URL('./src/assets/visibleeye.svg', import.meta.url).href;
+const disableEye = new URL('./src/assets/disableye.svg', import.meta.url).href;
+
 // State Management
 let selectedFile = null;
 let currentFileId = null;
@@ -11,6 +14,14 @@ const buildApiUrl = (path) => `${API_URL}${path.startsWith('/') ? path : `/${pat
 
 // DOM Elements
 const el = {
+    loginScreen: document.getElementById('login-screen'),
+    loginEmail: document.getElementById('login-email'),
+    loginPassword: document.getElementById('login-password'),
+    loginPasswordToggle: null,
+    loginPasswordToggleIcon: null,
+    loginBtn: document.getElementById('login-btn'),
+    loginError: document.getElementById('login-error'),
+    appContainer: document.getElementById('app'),
     profileSelect: document.getElementById('profile-select'),
     dropZone: document.getElementById('drop-zone'),
     fileInput: document.getElementById('file-input'),
@@ -42,6 +53,54 @@ const el = {
     downloadRejectedBtn: document.getElementById('download-rejected-btn'),
     resetBtn: document.getElementById('reset-btn')
 };
+
+const AUTH_EMAIL = 'sadiqaftab6000@gmail.com';
+const AUTH_PASSWORD = 'sadiq49';
+let isAuthenticated = false;
+
+function setLoginVisible(visible) {
+    if (visible) {
+        el.loginScreen.classList.remove('hidden');
+        el.appContainer.classList.add('hidden');
+    } else {
+        el.loginScreen.classList.add('hidden');
+        el.appContainer.classList.remove('hidden');
+    }
+}
+
+function showLoginError(message) {
+    el.loginError.textContent = message || '';
+    if (message) {
+        el.loginError.classList.remove('hidden');
+    } else {
+        el.loginError.classList.add('hidden');
+    }
+}
+
+function authenticateUser() {
+    const email = el.loginEmail.value.trim();
+    const password = el.loginPassword.value;
+
+    if (!email || !password) {
+        showLoginError('Enter your email and password to continue.');
+        return;
+    }
+
+    if (email !== AUTH_EMAIL || password !== AUTH_PASSWORD) {
+        showLoginError('Email or password is incorrect. Please try again.');
+        return;
+    }
+
+    showLoginError('');
+    isAuthenticated = true;
+    setLoginVisible(false);
+    setStatus('Login successful. Connecting to backend...', false);
+    checkHealth().then((ok) => {
+        if (!ok) {
+            setStatus('Service temporarily unavailable. Retry upload.', true);
+        }
+    });
+}
 
 function setStatus(message, isError = false) {
     if (!el.statusMessage) return;
@@ -139,18 +198,47 @@ async function checkHealth() {
     }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-    checkHealth().then((ok) => {
-        if (!ok) {
-            setStatus('Service temporarily unavailable. Retry upload.', true);
-        }
-    });
+const initializeApp = () => {
+    el.loginPasswordToggle = document.getElementById('login-password-toggle');
+    el.loginPasswordToggleIcon = document.getElementById('login-password-toggle-icon');
+    setLoginVisible(true);
     setDownloadButtonsState(false);
     el.healthRetryBtn.classList.add('hidden');
+    el.loginBtn.addEventListener('click', authenticateUser);
+    const submitOnEnter = (event) => {
+        if (event.key === 'Enter') {
+            authenticateUser();
+        }
+    };
+    el.loginPassword.addEventListener('keypress', submitOnEnter);
+    el.loginEmail.addEventListener('keypress', submitOnEnter);
+    if (el.loginPasswordToggle) {
+        el.loginPasswordToggle.addEventListener('click', togglePasswordVisibility);
+    }
+    if (el.loginPasswordToggleIcon) {
+        el.loginPasswordToggleIcon.src = disableEye;
+        el.loginPasswordToggleIcon.alt = 'Show password';
+    }
     el.healthRetryBtn.addEventListener('click', async () => {
         await checkHealth();
     });
-});
+};
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeApp);
+} else {
+    initializeApp();
+}
+
+function togglePasswordVisibility() {
+    const isPassword = el.loginPassword.type === 'password';
+    el.loginPassword.type = isPassword ? 'text' : 'password';
+    el.loginPasswordToggle.setAttribute('aria-label', isPassword ? 'Hide password' : 'Show password');
+    if (el.loginPasswordToggleIcon) {
+        el.loginPasswordToggleIcon.src = isPassword ? visibleEye : disableEye;
+        el.loginPasswordToggleIcon.alt = isPassword ? 'Hide password' : 'Show password';
+    }
+}
 
 // Reset all validation state when new file is selected
 function resetValidationState() {

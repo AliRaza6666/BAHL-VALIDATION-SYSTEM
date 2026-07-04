@@ -33,8 +33,35 @@
         </div>
     </header>
 
+    <!-- Login Screen -->
+    <div id="login-screen" class="max-w-3xl mx-auto px-6 py-16 flex-1">
+        <section class="bg-white border border-gray-200 rounded-3xl p-8 custom-shadow text-center">
+            <h1 class="text-2xl md:text-3xl font-bold text-gray-900 mb-3">Welcome to BAHL Validation</h1>
+            <p class="text-sm text-gray-500 mb-8">Please sign in with your credentials to continue.</p>
+
+            <div class="space-y-4 text-left">
+                <div>
+                    <label for="login-email" class="block text-sm font-semibold text-gray-700 mb-2">Email</label>
+                    <input id="login-email" type="email" autocomplete="username" class="w-full bg-gray-50 border border-gray-300 rounded-xl px-4 py-3 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" placeholder="you@example.com">
+                </div>
+                <div>
+                    <label for="login-password" class="block text-sm font-semibold text-gray-700 mb-2">Password</label>
+                    <div class="relative">
+                        <input id="login-password" type="password" autocomplete="current-password" class="w-full bg-gray-50 border border-gray-300 rounded-xl px-4 py-3 pr-14 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" placeholder="Enter your password">
+                        <button id="login-password-toggle" type="button" class="absolute inset-y-0 right-0 mr-3 flex items-center justify-center rounded-lg bg-transparent px-3 text-gray-500 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-emerald-500" aria-label="Show password">
+                            <img id="login-password-toggle-icon" src="" alt="Show password" class="h-5 w-5 mt-5" />
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <p id="login-error" class="mt-4 text-sm text-red-700 hidden" role="alert"></p>
+            <button id="login-btn" class="mt-6 w-full bg-emerald-500 text-white font-bold px-6 py-3 rounded-xl hover:bg-emerald-600 transition-all duration-200">Sign In</button>
+        </section>
+    </div>
+
     <!-- Main Container -->
-    <main class="max-w-5xl mx-auto px-6 py-8 w-full flex-1">
+    <main id="app" class="hidden max-w-5xl mx-auto px-6 py-8 w-full flex-1">
         <!-- Hero Upload Card -->
         <section id="upload-card" class="bg-white border border-gray-200 rounded-2xl p-8 custom-shadow text-center transition-all duration-300">
             <!-- Profile Selection -->
