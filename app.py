@@ -18,3 +18,5 @@ if __name__ == '__main__':
     ensure_runtime_directories()
     load_rules()
     print('Runtime directories and rules are ready.')
+    print('Starting local backend server at http://127.0.0.1:5000')
+    app.run(host='127.0.0.1', port=5000, debug=True)

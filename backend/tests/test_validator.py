@@ -296,17 +296,18 @@ def test_generate_validated_excel_streams_adds_status_and_error_columns_with_sty
     passed_wb = openpyxl.load_workbook(io.BytesIO(passed_bytes), data_only=False)
     passed_ws = passed_wb.active
     assert passed_ws.cell(row=1, column=3).value == 'Validation Status'
-    assert passed_ws.cell(row=2, column=3).value == 'VALID'
+    assert passed_ws.cell(row=2, column=3).value == 'PASS'
     assert passed_ws.cell(row=1, column=3).fill.fgColor.rgb == 'FF0E8348'
 
     rejected_wb = openpyxl.load_workbook(io.BytesIO(rejected_bytes), data_only=False)
     rejected_ws = rejected_wb.active
     assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 1).value == 'Validation Status'
-    assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 2).value == 'Error Reason'
-    assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 3).value == 'Suggested Fix'
+    assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 2).value == 'Original Row'
+    assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 3).value == 'Error Reason'
+    assert rejected_ws.cell(row=1, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 4).value == 'Suggested Fix'
     assert rejected_ws.cell(row=2, column=2).fill.fgColor.rgb == 'FFFDE2E2'
-    assert rejected_ws.cell(row=2, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 2).value is not None
-    assert 'Mobile number format invalid' in str(rejected_ws.cell(row=2, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 2).value)
+    assert rejected_ws.cell(row=2, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 3).value is not None
+    assert 'Mobile number format invalid' in str(rejected_ws.cell(row=2, column=len(['BeneficiaryName', 'BeneficiaryMobile']) + 3).value)
 
 
 def test_generate_highlighted_validation_report_includes_all_rows_and_comments():
@@ -446,3 +447,41 @@ def test_1link_profile_maps_mobile_and_account_fields():
     assert results[1]['status'] == 'FAIL'
     assert any(err['field'] == 'Amount' for err in results[1]['errors'])
     assert any(err['field'] == 'BeneficiaryName' for err in results[1]['errors'])
+
+
+def test_1link_profile_validates_ntn_identity_when_present():
+    rules = load_rules()
+    rows = [
+        {
+            'Amount': '100.50',
+            'BankName': 'Test Bank',
+            'BeneficiaryAccountNumber': '000123456',
+            'BeneficiaryName': 'Sadiq Ali',
+            'BeneficiaryCode': 'B1',
+            'ReferenceField1': 'R1',
+            'ReferenceField2': 'R2',
+            'BeneficiaryEmail': 'ali@example.com',
+            'BeneficiaryNumber': '03112753114',
+            'BeneficiaryIdentificationType': 'NTN',
+            'BeneficiaryIdentificationNo': '41640934',
+        },
+        {
+            'Amount': '100.50',
+            'BankName': 'Test Bank',
+            'BeneficiaryAccountNumber': '000123457',
+            'BeneficiaryName': 'Bad NTN',
+            'BeneficiaryCode': 'B1',
+            'ReferenceField1': 'R1',
+            'ReferenceField2': 'R2',
+            'BeneficiaryEmail': 'ali@example.com',
+            'BeneficiaryNumber': '03112753114',
+            'BeneficiaryIdentificationType': 'NTN',
+            'BeneficiaryIdentificationNo': '1234',
+        },
+    ]
+
+    results = validate_rows(rows, '1link', rules)
+
+    assert results[0]['status'] == 'PASS'
+    assert results[1]['status'] == 'FAIL'
+    assert any(err['field'] == 'BeneficiaryIdentificationNo' and 'NTN must be exactly 8 characters' in err['msg'] for err in results[1]['errors'])

@@ -268,6 +268,7 @@ def parse_excel_workbook(file_bytes: bytes, filename: Optional[str], mime_type: 
                     continue
 
                 row_data['_meta'] = row_meta
+                row_data['_meta']['original_row'] = row_index
                 rows.append(row_data)
 
             workbook.close()
@@ -321,6 +322,7 @@ def parse_excel_workbook(file_bytes: bytes, filename: Optional[str], mime_type: 
                 continue
 
             row_data['_meta'] = row_meta
+            row_data['_meta']['original_row'] = row_index + 1
             rows.append(row_data)
 
         print(f"[UPLOAD] Rows extracted: {len(rows)}")
@@ -501,79 +503,89 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
                     'actual': mobile_val
                 })
 
-        # 4. Identity validation (Profile A/raast only)
-        if profile == 'raast':
-            id_type_raw = row.get('BeneficiaryIdentificationType', '')
+        # 4. Identity validation
+        # Only trigger identity validation for non-raast profiles when an identification
+        # value is actually present (non-empty). Previously this used header presence
+        # which caused format checks to run even when cells were blank.
+        id_type_raw = row.get('BeneficiaryIdentificationType', '')
+        id_no_raw = row.get('BeneficiaryIdentificationNo', '')
+        id_type_present = isinstance(id_type_raw, str) and id_type_raw.strip() != ''
+        id_no_present = isinstance(id_no_raw, str) and id_no_raw.strip() != ''
+        identity_headers_present = id_type_present or id_no_present
+
+        if profile == 'raast' or identity_headers_present:
             id_type = id_type_raw.strip() if isinstance(id_type_raw, str) else _to_cell_text(id_type_raw)
-            id_no_raw = row.get('BeneficiaryIdentificationNo', '')
             id_no = id_no_raw.strip() if isinstance(id_no_raw, str) else _to_cell_text(id_no_raw)
-            iban_raw = row.get('BeneficiaryIBAN', '')
-            iban = iban_raw.strip() if isinstance(iban_raw, str) else _to_cell_text(iban_raw)
-            
-            if id_type:
-                if id_type not in ['CNIC', 'NTN']:
+
+            if profile == 'raast' or id_type or id_no:
+                if id_type:
+                    if id_type not in ['CNIC', 'NTN']:
+                        errors.append({
+                            'col': header_map.get('BeneficiaryIdentificationType'),
+                            'field': 'BeneficiaryIdentificationType',
+                            'msg': 'Identification Type must be CNIC or NTN',
+                            'expected': 'CNIC or NTN',
+                            'actual': id_type
+                        })
+                    if id_no:
+                        if id_type == 'CNIC':
+                            if not id_no.isdigit():
+                                errors.append({
+                                    'col': header_map.get('BeneficiaryIdentificationNo'),
+                                    'field': 'BeneficiaryIdentificationNo',
+                                    'msg': 'CNIC must be numeric',
+                                    'expected': 'Numeric value',
+                                    'actual': id_no
+                                })
+                            elif len(id_no) != 13:
+                                errors.append({
+                                    'col': header_map.get('BeneficiaryIdentificationNo'),
+                                    'field': 'BeneficiaryIdentificationNo',
+                                    'msg': 'CNIC must be exactly 13 digits',
+                                    'expected': '13 digits (numeric)',
+                                    'actual': id_no
+                                })
+                        elif id_type == 'NTN':
+                            if not re.fullmatch(r'[A-Za-z0-9]{8}', id_no):
+                                if len(id_no) != 8:
+                                    errors.append({
+                                        'col': header_map.get('BeneficiaryIdentificationNo'),
+                                        'field': 'BeneficiaryIdentificationNo',
+                                        'msg': 'NTN must be exactly 8 characters',
+                                        'expected': '8 chars',
+                                        'actual': id_no
+                                    })
+                                else:
+                                    errors.append({
+                                        'col': header_map.get('BeneficiaryIdentificationNo'),
+                                        'field': 'BeneficiaryIdentificationNo',
+                                        'msg': 'NTN must be alphanumeric',
+                                        'expected': 'Alphanumeric',
+                                        'actual': id_no
+                                    })
+                    elif profile == 'raast':
+                        errors.append({
+                            'col': header_map.get('BeneficiaryIdentificationNo'),
+                            'field': 'BeneficiaryIdentificationNo',
+                            'msg': 'Identification Number is required',
+                            'expected': 'ID Number',
+                            'actual': '(Empty)'
+                        })
+                elif id_no:
                     errors.append({
                         'col': header_map.get('BeneficiaryIdentificationType'),
                         'field': 'BeneficiaryIdentificationType',
-                        'msg': 'Identification Type must be CNIC or NTN',
+                        'msg': 'Identification Type is required',
                         'expected': 'CNIC or NTN',
-                        'actual': id_type
-                    })
-                if id_no:
-                    if id_type == 'CNIC':
-                        if not id_no.isdigit():
-                            errors.append({
-                                'col': header_map.get('BeneficiaryIdentificationNo'),
-                                'field': 'BeneficiaryIdentificationNo',
-                                'msg': 'CNIC must be numeric',
-                                'expected': 'Numeric value',
-                                'actual': id_no
-                            })
-                        elif len(id_no) != 13:
-                            errors.append({
-                                'col': header_map.get('BeneficiaryIdentificationNo'),
-                                'field': 'BeneficiaryIdentificationNo',
-                                'msg': 'CNIC must be exactly 13 digits',
-                                'expected': '13 digits (numeric)',
-                                'actual': id_no
-                            })
-                    elif id_type == 'NTN':
-                        if not re.fullmatch(r'[A-Za-z0-9]{8}', id_no):
-                            if len(id_no) != 8:
-                                errors.append({
-                                    'col': header_map.get('BeneficiaryIdentificationNo'),
-                                    'field': 'BeneficiaryIdentificationNo',
-                                    'msg': 'NTN must be exactly 8 characters',
-                                    'expected': '8 chars',
-                                    'actual': id_no
-                                })
-                            else:
-                                errors.append({
-                                    'col': header_map.get('BeneficiaryIdentificationNo'),
-                                    'field': 'BeneficiaryIdentificationNo',
-                                    'msg': 'NTN must be alphanumeric',
-                                    'expected': 'Alphanumeric',
-                                    'actual': id_no
-                                })
-                else:
-                    errors.append({
-                        'col': header_map.get('BeneficiaryIdentificationNo'),
-                        'field': 'BeneficiaryIdentificationNo',
-                        'msg': 'Identification Number is required',
-                        'expected': 'ID Number',
                         'actual': '(Empty)'
                     })
-            elif id_no:
-                errors.append({
-                    'col': header_map.get('BeneficiaryIdentificationType'),
-                    'field': 'BeneficiaryIdentificationType',
-                    'msg': 'Identification Type is required',
-                    'expected': 'CNIC or NTN',
-                    'actual': '(Empty)'
-                })
 
-            # 5. IBAN / Account Number rule
-            iban_field = 'BeneficiaryIBAN'
+        # 5. IBAN / Account Number rule
+        iban_field = 'BeneficiaryIBAN'
+        if profile == 'raast':
+            iban_raw = row.get(iban_field, '')
+            iban = iban_raw.strip() if isinstance(iban_raw, str) else _to_cell_text(iban_raw)
+
             if iban:
                 if not re.fullmatch(r'PK[A-Z0-9]{22}', iban):
                     errors.append({
@@ -917,7 +929,7 @@ def generate_validated_excel_streams(rows, results, headers, profile):
     wb_rejected = openpyxl.Workbook()
     ws_rejected = wb_rejected.active
     ws_rejected.title = 'Sheet'
-    ws_rejected.append(normalized_headers + ['Validation Status', 'Error Reason', 'Suggested Fix'])
+    ws_rejected.append(normalized_headers + ['Validation Status', 'Original Row', 'Error Reason', 'Suggested Fix'])
 
     # Build the passed and rejected workbooks row by row
     for idx, row in enumerate(rows):
@@ -933,7 +945,8 @@ def generate_validated_excel_streams(rows, results, headers, profile):
             errors = result.get('errors', [])
             error_summary = _build_error_summary(errors)
             suggested_fix = _build_suggested_fix_summary(errors)
-            ws_rejected.append(row_values + ['FAIL', error_summary, suggested_fix])
+            original_row = row.get('_meta', {}).get('original_row', idx + 2)
+            ws_rejected.append(row_values + ['FAIL', original_row, error_summary, suggested_fix])
             rejected_row_number = ws_rejected.max_row
 
             field_error_comments = {}
@@ -1003,7 +1016,7 @@ def generate_rejected_validation_report(rows, results, headers, profile):
     wb_rejected = openpyxl.Workbook()
     ws_rejected = wb_rejected.active
     ws_rejected.title = 'RejectedRecords'
-    ws_rejected.append(normalized_headers + ['Validation Status', 'Error Reason', 'Suggested Fix'])
+    ws_rejected.append(normalized_headers + ['Validation Status', 'Original Row', 'Error Reason', 'Suggested Fix'])
 
     for idx, row in enumerate(rows):
         if idx >= len(results):
@@ -1017,8 +1030,9 @@ def generate_rejected_validation_report(rows, results, headers, profile):
         error_summary = _build_error_summary(errors)
         suggested_fix = _build_suggested_fix_summary(errors)
         row_values = [row.get(h, '') for h in normalized_headers]
+        original_row = row.get('_meta', {}).get('original_row', idx + 2)
 
-        ws_rejected.append(row_values + ['FAIL', error_summary, suggested_fix])
+        ws_rejected.append(row_values + ['FAIL', original_row, error_summary, suggested_fix])
         rejected_row_number = ws_rejected.max_row
 
         field_error_comments = {}
@@ -1363,3 +1377,5 @@ if __name__ == '__main__':
     print('Upload directory ready')
     print('Generated directory ready')
     print('Logs directory ready')
+    print('Starting local backend server at http://127.0.0.1:5000')
+    app.run(host='127.0.0.1', port=5000, debug=True)
