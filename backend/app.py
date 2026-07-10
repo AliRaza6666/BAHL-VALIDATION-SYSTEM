@@ -367,12 +367,13 @@ def detect_profile(headers: List[str]) -> str:
     normalized = {h.strip(): h for h in headers if h}
     
     # Check for direct indicators of profile
-    if any(h in normalized for h in ['BeneficiaryIBAN', 'BeneficiaryIdentificationType', 'BeneficiaryIdentificationNo']):
-        return 'raast'
-    if any(h in normalized for h in ['BeneficiaryAccountNo']):
-        return 'web_based'
+    # IMPORTANT: Check 1link FIRST before raast, since a 1link file might have NTN columns that would trigger raast detection
     if any(h in normalized for h in ['BeneficiaryAccountNumber', 'BeneficiaryNumber']):
         return '1link'
+    if any(h in normalized for h in ['BeneficiaryAccountNo']):
+        return 'web_based'
+    if any(h in normalized for h in ['BeneficiaryIBAN', 'BeneficiaryIdentificationType', 'BeneficiaryIdentificationNo']):
+        return 'raast'
         
     # Check exact matching fallback
     for profile_name, expected_headers in PROFILE_HEADERS.items():
