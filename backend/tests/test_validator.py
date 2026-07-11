@@ -8,7 +8,7 @@ import xlwt
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app import detect_excel_format, parse_excel_workbook, validate_rows, generate_validated_excel_streams, generate_highlighted_validation_report
+from app import detect_excel_format, parse_excel_workbook, validate_rows, validate_excel_data, generate_validated_excel_streams, generate_highlighted_validation_report
 
 
 def load_rules():
@@ -277,6 +277,57 @@ def test_web_profile_allows_duplicate_beneficiary_account_numbers():
     assert results[0]['status'] == 'PASS'
     assert results[1]['status'] == 'PASS'
     assert all(not any(err.get('is_duplicate') for err in result['errors']) for result in results)
+
+
+def test_suggested_fix_for_non_ntn_errors_is_not_ntn_specific():
+    rules = load_rules()
+    rows = [
+        {
+            'Amount': '100',
+            'BeneficiaryName': 'Test',
+            'BeneficiaryNumber': '123456',
+            'BeneficiaryAccountNumber': '123 456',
+        }
+    ]
+
+    results = validate_rows(rows, '1link', rules, debug=False)
+    assert results[0]['status'] == 'FAIL'
+    assert any(err['msg'] == 'Account number must contain only digits and no spaces or invalid characters' for err in results[0]['errors'])
+
+    from backend.app import _build_suggested_fix_summary
+
+    summary = _build_suggested_fix_summary(results[0]['errors'])
+    assert 'Provide valid NTN value' not in summary
+    assert 'Remove leading/trailing spaces' in summary
+
+
+def test_ntn_validation_only_runs_when_identity_columns_exist():
+    rules = load_rules()
+    rows_without_ntn_columns = [
+        {
+            'Amount': '100',
+            'BeneficiaryName': 'Test',
+            'BeneficiaryNumber': '03111234567',
+            'BeneficiaryAccountNumber': '123456',
+        }
+    ]
+    headers_without_ntn = ['Amount', 'BeneficiaryName', 'BeneficiaryNumber', 'BeneficiaryAccountNumber']
+    results_without_columns = validate_excel_data(rows_without_ntn_columns, headers_without_ntn, '1link', rules, debug=False)
+    assert all(not err.get('is_ntn_validation') for err in results_without_columns[0]['errors'])
+
+    headers_with_ntn = ['Amount', 'BeneficiaryName', 'BeneficiaryNumber', 'BeneficiaryAccountNumber', 'BeneficiaryIdentificationType', 'BeneficiaryIdentificationNo']
+    rows_with_ntn_columns = [
+        {
+            'Amount': '100',
+            'BeneficiaryName': 'Test',
+            'BeneficiaryNumber': '03111234567',
+            'BeneficiaryAccountNumber': '123456',
+            'BeneficiaryIdentificationType': 'NTN',
+            'BeneficiaryIdentificationNo': '12345',
+        }
+    ]
+    results_with_columns = validate_excel_data(rows_with_ntn_columns, headers_with_ntn, '1link', rules, debug=False)
+    assert any(err.get('is_ntn_validation') for err in results_with_columns[0]['errors'])
 
 
 def test_generate_validated_excel_streams_adds_status_and_error_columns_with_styling():

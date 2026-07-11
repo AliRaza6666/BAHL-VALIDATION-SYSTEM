@@ -390,6 +390,7 @@ def validate_rows(rows: List[Dict[str, str]], profile: str, rules: Dict[str, Any
 
 def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile: str, rules: Dict[str, Any], debug: bool = False) -> List[Dict[str, Any]]:
     header_map = {h.strip(): i for i, h in enumerate(headers) if h}
+    identity_columns_present = any(h.strip() in {'BeneficiaryIdentificationType', 'BeneficiaryIdentificationNo'} for h in headers if h)
     
     # Precompute duplicates
     duplicate_tracker = {
@@ -513,8 +514,9 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
         id_type_present = isinstance(id_type_raw, str) and id_type_raw.strip() != ''
         id_no_present = isinstance(id_no_raw, str) and id_no_raw.strip() != ''
         identity_headers_present = id_type_present or id_no_present
+        identity_validation_enabled = profile == 'raast' or identity_columns_present
 
-        if profile == 'raast' or identity_headers_present:
+        if identity_validation_enabled and (profile == 'raast' or identity_headers_present):
             id_type = id_type_raw.strip() if isinstance(id_type_raw, str) else _to_cell_text(id_type_raw)
             id_no = id_no_raw.strip() if isinstance(id_no_raw, str) else _to_cell_text(id_no_raw)
 
@@ -554,7 +556,8 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
                                         'field': 'BeneficiaryIdentificationNo',
                                         'msg': 'NTN must be exactly 8 characters',
                                         'expected': '8 chars',
-                                        'actual': id_no
+                                        'actual': id_no,
+                                        'is_ntn_validation': True
                                     })
                                 else:
                                     errors.append({
@@ -562,7 +565,8 @@ def validate_excel_data(rows: List[Dict[str, str]], headers: List[str], profile:
                                         'field': 'BeneficiaryIdentificationNo',
                                         'msg': 'NTN must be alphanumeric',
                                         'expected': 'Alphanumeric',
-                                        'actual': id_no
+                                        'actual': id_no,
+                                        'is_ntn_validation': True
                                     })
                     elif profile == 'raast':
                         errors.append({
@@ -754,16 +758,18 @@ def _humanize_error(error: Dict[str, Any]) -> str:
 
 def _suggested_fix(error: Dict[str, Any]) -> str:
     msg = (error.get('msg') or '').lower()
+    field = (error.get('field') or '').lower()
+
     if 'iban' in msg:
         return 'Use 24-char IBAN'
     if 'mobile' in msg or 'beneficiarynumber' in msg or 'beneficiarymobile' in msg:
         return 'Use 03XXXXXXXXX'
-    if 'cnic' in msg or 'beneficiaryidentificationno' in msg:
-        return 'Provide valid CNIC'
-    if 'ntn' in msg:
-        return 'Provide valid NTN value'
     if 'duplicate' in msg:
         return 'Remove duplicate'
+    if 'cnic' in msg or 'beneficiaryidentificationno' in msg:
+        return 'Provide valid CNIC'
+    if error.get('is_ntn_validation') and 'ntn' in msg:
+        return 'Provide valid NTN value'
     if 'required' in msg or 'missing' in msg:
         return 'Fill in required field'
     if 'header' in msg:
